@@ -178,3 +178,99 @@ def test_summary_counts_remaining_open_edges(tmp_path):
     if not info.watertight:
         assert info.open_edges > 0
         assert "öppna kanter" in info.summary()
+
+
+# --------------------------------------------------------------------------
+# Flera kroppar i samma fil
+# --------------------------------------------------------------------------
+
+
+def _two_touching_boxes() -> list:
+    """Två solida kroppar som möts yta mot yta - som en CAD-fil med flera bodies."""
+    first = trimesh.creation.box(extents=[100.0, 60.0, 40.0])
+    second = trimesh.creation.box(extents=[100.0, 60.0, 40.0])
+    second.apply_translation([100.0, 0.0, 0.0])
+    return [first, second]
+
+
+def test_concatenating_touching_bodies_is_not_watertight():
+    """Utgångsläget: att bara lägga trianglarna i samma mesh räcker inte."""
+    naive = trimesh.util.concatenate(_two_touching_boxes())
+    naive.merge_vertices()
+
+    assert not naive.is_watertight
+    boundary, excess = mesh_io.bad_edges(naive)
+    assert boundary == 0, "det finns inga hål - problemet är ytor som möts"
+    assert excess > 0
+
+
+def test_bad_edges_counts_both_kinds():
+    assert mesh_io.bad_edges(trimesh.creation.box(extents=[10, 10, 10])) == (0, 0)
+    assert mesh_io.bad_edges(_holed_box()) == (9, 0)
+
+    naive = trimesh.util.concatenate(_two_touching_boxes())
+    naive.merge_vertices()
+    assert mesh_io.open_edge_count(naive) == mesh_io.bad_edges(naive)[1]
+
+
+def test_merge_bodies_unions_separate_solids():
+    merged = mesh_io.merge_bodies(_two_touching_boxes())
+
+    assert merged.is_watertight
+    assert merged.volume == pytest.approx(2 * 100 * 60 * 40)
+
+
+def test_merge_bodies_keeps_a_single_mesh_untouched():
+    only = trimesh.creation.box(extents=[10, 10, 10])
+    assert mesh_io.merge_bodies([only]) is only
+
+
+def test_a_scene_with_several_bodies_becomes_one_solid():
+    """Så här ser ett 3MF från CAD ofta ut."""
+    scene = trimesh.Scene(_two_touching_boxes())
+
+    merged = mesh_io._as_single_mesh(scene)
+
+    assert merged.is_watertight
+    assert mesh_io.open_edge_count(merged) == 0
+
+
+def test_repair_rebuilds_a_flattened_multi_body_mesh(tmp_path):
+    """En STL har tappat kroppsindelningen - reparationen får hitta tillbaka."""
+    naive = trimesh.util.concatenate(_two_touching_boxes())
+    path = tmp_path / "flerkropp.stl"
+    mesh_io.save_stl(naive, path)
+
+    info = mesh_io.load_mesh(path)
+
+    assert info.watertight
+    assert info.open_edges == 0
+    assert any("kroppar" in a for a in info.repairs)
+    assert info.volume_mm3 == pytest.approx(2 * 100 * 60 * 40, rel=1e-6)
+
+
+def test_union_may_legitimately_shrink_the_volume(tmp_path):
+    """Överlappande kroppar räknas dubbelt före unionen - det är inte ett fel."""
+    first = trimesh.creation.box(extents=[100.0, 60.0, 40.0])
+    second = trimesh.creation.box(extents=[100.0, 60.0, 40.0])
+    second.apply_translation([50.0, 0.0, 0.0])  # halva volymen överlappar
+    naive = trimesh.util.concatenate([first, second])
+    path = tmp_path / "overlapp.stl"
+    mesh_io.save_stl(naive, path)
+
+    info = mesh_io.load_mesh(path)
+
+    assert info.watertight
+    # Sann volym: 150 x 60 x 40, inte summan av de två lådorna.
+    assert info.volume_mm3 == pytest.approx(150 * 60 * 40, rel=1e-6)
+
+
+def test_bodies_that_are_far_apart_are_left_alone():
+    """Två kroppar som inte rör varandra ska inte tvingas ihop till nonsens."""
+    first = trimesh.creation.box(extents=[10.0, 10.0, 10.0])
+    second = trimesh.creation.box(extents=[10.0, 10.0, 10.0])
+    second.apply_translation([500.0, 0.0, 0.0])
+
+    merged = mesh_io.merge_bodies([first, second])
+
+    assert merged.volume == pytest.approx(2 * 1000)

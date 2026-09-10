@@ -27,6 +27,7 @@ class Settings:
     clearance_mm: float = 0.15
     margin_mm: float = 5.0
     show_bed: bool = True
+    light_background: bool = True
     auto_orient: bool = True
     explode_mm: float = 0.0
 

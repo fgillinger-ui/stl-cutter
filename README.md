@@ -86,6 +86,7 @@ och en 3D-vy till höger.
 I 3D-vyn ser du modellen, snittplanen som orange plan, och efter kapningen
 delarna i olika färger. Dra i reglaget *Spräng isär* för att se fogarna, och
 kryssa i *Visa byggplatta* för att se skrivarens plattstorlek som rutnät.
+Kryssrutan *Ljus bakgrund* växlar mellan ljus och mörk vy — valet sparas.
 
 Analys och kapning kan ta någon minut på stora modeller. Det går alltid att
 trycka *Avbryt* — fönstret slutar aldrig svara. Meddelanden visas i rutan
@@ -221,9 +222,10 @@ Större värde ger lösare passning.
 
 ## Felsökning
 
-* **"Modellen har N öppna kanter"** — modellen är inte helt sluten. Programmet
-  försöker laga den automatiskt: identiska hörn slås ihop, sprickor som är
-  smalare än 0,1 mm svetsas ihop, och små hål fylls. Står varningen kvar gick
+* **"Modellen har N trasiga kanter"** — modellen är inte en giltig solid.
+  Programmet försöker laga den automatiskt: flera kroppar slås ihop till en med
+  en boolean union, identiska hörn slås ihop, sprickor smalare än 0,1 mm
+  svetsas ihop, och små hål fylls. Står varningen kvar gick
   skadan inte att laga, och delarna ärver hålen. Din slicer kan då rapportera
   *non-manifold edges*.
 

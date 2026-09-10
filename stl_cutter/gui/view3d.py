@@ -15,9 +15,15 @@ import trimesh
 
 log = logging.getLogger(__name__)
 
-MODEL_COLOR = (0.68, 0.72, 0.78, 1.0)
+#: Bakgrund och modellfärg hör ihop - en ljus modell försvinner mot vitt.
+DARK_BACKGROUND = (32, 34, 38)
+LIGHT_BACKGROUND = (238, 240, 244)
+MODEL_COLOR_ON_DARK = (0.68, 0.72, 0.78, 1.0)
+MODEL_COLOR_ON_LIGHT = (0.42, 0.48, 0.58, 1.0)
+
 PLANE_COLOR = (0.95, 0.55, 0.15, 0.28)
-BED_COLOR = (0.45, 0.5, 0.55, 0.6)
+BED_COLOR_ON_DARK = (0.45, 0.5, 0.55, 0.6)
+BED_COLOR_ON_LIGHT = (0.30, 0.34, 0.40, 0.7)
 
 #: Hur långt planen ritas utanför modellen, som andel av modellens storlek.
 PLANE_MARGIN = 0.08
@@ -92,16 +98,36 @@ def mesh_data(mesh: trimesh.Trimesh) -> gl.MeshData:
 class ModelView(gl.GLViewWidget):
     """Visar modellen, snittplanen och de färdiga delarna."""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, light_background: bool = True):
         super().__init__(parent)
-        self.setBackgroundColor((32, 34, 38))
+        self._light = bool(light_background)
+        self.setBackgroundColor(LIGHT_BACKGROUND if self._light else DARK_BACKGROUND)
         self._model_item = None
         self._plane_items: list = []
         self._part_items: list = []
         self._part_centres = np.zeros((0, 3))
         self._bed_item = None
+        self._printer = None
         self._explode_mm = 0.0
         self.opts["distance"] = 600
+
+    @property
+    def model_color(self):
+        return MODEL_COLOR_ON_LIGHT if self._light else MODEL_COLOR_ON_DARK
+
+    @property
+    def bed_color(self):
+        return BED_COLOR_ON_LIGHT if self._light else BED_COLOR_ON_DARK
+
+    def set_light_background(self, light: bool) -> None:
+        """Byt mellan ljus och mörk bakgrund utan att tappa det som visas."""
+        self._light = bool(light)
+        self.setBackgroundColor(LIGHT_BACKGROUND if self._light else DARK_BACKGROUND)
+        if self._model_item is not None:
+            self._model_item.setColor(self.model_color)
+        if self._bed_item is not None:
+            self.set_bed(self._printer, True)
+        self.update()
 
     # -- modellen ---------------------------------------------------------
 
@@ -114,7 +140,7 @@ class ModelView(gl.GLViewWidget):
             meshdata=mesh_data(mesh),
             smooth=False,
             shader="shaded",
-            color=MODEL_COLOR,
+            color=self.model_color,
             drawEdges=False,
         )
         self.addItem(self._model_item)
@@ -196,6 +222,7 @@ class ModelView(gl.GLViewWidget):
     # -- byggplattan ------------------------------------------------------
 
     def set_bed(self, printer, visible: bool) -> None:
+        self._printer = printer
         if self._bed_item is not None:
             self.removeItem(self._bed_item)
             self._bed_item = None
@@ -205,7 +232,7 @@ class ModelView(gl.GLViewWidget):
         grid = gl.GLGridItem()
         grid.setSize(*size)
         grid.setSpacing(spacing, spacing, spacing)
-        grid.setColor(tuple(int(c * 255) for c in BED_COLOR))
+        grid.setColor(tuple(int(c * 255) for c in self.bed_color))
         self._bed_item = grid
         self.addItem(grid)
 
