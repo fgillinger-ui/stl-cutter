@@ -40,3 +40,41 @@ def big_cylinder() -> trimesh.Trimesh:
 @pytest.fixture
 def big_torus() -> trimesh.Trimesh:
     return trimesh.creation.torus(major_radius=200.0, minor_radius=50.0)
+
+
+@pytest.fixture
+def long_rod() -> trimesh.Trimesh:
+    """Lång stav - snittet blir kompakt och tjockt (laxstjärt eller pinnar)."""
+    return trimesh.creation.box(extents=[500.0, 60.0, 60.0])
+
+
+@pytest.fixture
+def thin_plate() -> trimesh.Trimesh:
+    """Tunn platta - snittet blir bara 3 mm tjockt (pussel eller ingen fog)."""
+    return trimesh.creation.box(extents=[600.0, 300.0, 3.0])
+
+
+@pytest.fixture
+def medium_plate() -> trimesh.Trimesh:
+    """6 mm platt snitt - hamnar i pusselintervallet 4-8 mm."""
+    return trimesh.creation.box(extents=[600.0, 300.0, 6.0])
+
+
+@pytest.fixture
+def big_sphere() -> trimesh.Trimesh:
+    """Stort klot - runt snitt, ska ge pinnar."""
+    return trimesh.creation.icosphere(subdivisions=4, radius=200.0)
+
+
+@pytest.fixture
+def necked_bar() -> trimesh.Trimesh:
+    """Stav med ett 3 mm tunt midjeparti exakt där det jämnt fördelade snittet
+    skulle hamna. Planeraren ska flytta snittet därifrån."""
+    bar = trimesh.creation.box(extents=[500.0, 60.0, 60.0])
+    neck_x = -500.0 / 3.0 + 500.0 / 6.0  # = nominell position för första snittet
+    cutters = []
+    for sign in (1.0, -1.0):
+        block = trimesh.creation.box(extents=[20.0, 30.0, 80.0])
+        block.apply_translation([neck_x, sign * 16.5, 0.0])
+        cutters.append(block)
+    return bar.difference(trimesh.util.concatenate(cutters))

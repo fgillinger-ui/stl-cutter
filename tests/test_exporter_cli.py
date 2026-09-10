@@ -66,3 +66,103 @@ def test_cli_unknown_printer_is_a_friendly_error(tmp_path, big_box, capsys):
 
     assert main(["cut", str(model), "--printer", "Finns inte", "--out", str(tmp_path)]) == 2
     assert "Okänd skrivare" in capsys.readouterr().err
+
+
+def test_report_contains_analysis_and_recommendations(tmp_path, big_box, printer):
+    """Fas 2: rapporten ska bära analys, poäng och de tre bästa fogförslagen."""
+    plan = plan_splits(big_box, printer, auto_orient=False, analyse=True)
+    result = cut_mesh(big_box, plan)
+
+    export = exporter.export_parts(result, tmp_path / "ut", printer)
+    report = json.loads(export.report_file.read_text(encoding="utf-8"))
+
+    cuts = report["plan"]["cuts"]
+    assert len(cuts) == 2
+    for cut in cuts:
+        assert cut["analysis"]["area_mm2"] > 0
+        assert cut["analysis"]["contour_count"] >= 1
+        assert cut["analysis"]["min_wall_mm"] > 0
+        assert "roundness" in cut["analysis"]
+        assert cut["score"]["total"] >= 0
+        assert cut["score"]["penalties"] is not None
+        assert cut["recommendation"]["joint_type"] in (
+            "none",
+            "puzzle",
+            "dovetail",
+            "pins",
+            "screw",
+        )
+        assert cut["recommendation"]["motivation"]
+        assert 0.0 <= cut["recommendation"]["confidence"] <= 1.0
+        assert 1 <= len(cut["alternatives"]) <= 3
+    assert report["plan"]["assembly_intent"] == "glue"
+
+
+def test_cli_explain_prints_swedish_motivations(tmp_path, big_box, capsys):
+    model = tmp_path / "modell.stl"
+    mesh_io.save_stl(big_box, model)
+
+    code = main(
+        [
+            "cut",
+            str(model),
+            "--printer",
+            "Bambu P1S",
+            "--out",
+            str(tmp_path / "ut"),
+            "--dry-run",
+            "--explain",
+        ]
+    )
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "Rekommendation:" in out
+    assert "Motivering:" in out
+    assert "Säkerhet:" in out
+
+
+def test_cli_assembly_intent_changes_the_recommendation(tmp_path, long_rod, capsys):
+    model = tmp_path / "stav.stl"
+    mesh_io.save_stl(long_rod, model)
+
+    main(
+        [
+            "cut",
+            str(model),
+            "--printer",
+            "Bambu P1S",
+            "--out",
+            str(tmp_path / "ut"),
+            "--dry-run",
+            "--explain",
+            "--assembly",
+            "demountable",
+        ]
+    )
+    demountable = capsys.readouterr().out
+
+    assert "screw" in demountable
+    assert "tas isär" in demountable
+
+
+def test_cli_no_analysis_skips_the_recommendation(tmp_path, big_box, capsys):
+    model = tmp_path / "modell.stl"
+    mesh_io.save_stl(big_box, model)
+    out_dir = tmp_path / "ut"
+
+    main(
+        [
+            "cut",
+            str(model),
+            "--printer",
+            "Bambu P1S",
+            "--out",
+            str(out_dir),
+            "--dry-run",
+            "--no-analysis",
+        ]
+    )
+
+    report = json.loads((out_dir / "split_report.json").read_text(encoding="utf-8"))
+    assert all(cut["analysis"] is None for cut in report["plan"]["cuts"])
