@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stl-cutter"
+version = "0.1.0"
+description = "Dela upp STL/3MF-modeller så att delarna får plats på en 3D-skrivares byggplatta."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "stl-cutter" }]
+dependencies = [
+    "trimesh>=4.0",
+    "manifold3d>=2.4",
+    "shapely>=2.0",
+    "numpy>=1.26",
+    "scipy>=1.11",
+    "networkx>=3.1",
+    "lxml>=5.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+stl-cutter = "stl_cutter.cli:main"
+
+[tool.setuptools]
+packages = ["stl_cutter", "stl_cutter.core"]
+
+[tool.setuptools.package-data]
+stl_cutter = []
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"

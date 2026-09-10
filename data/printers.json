@@ -1,0 +1,44 @@
+{
+  "printers": [
+    {
+      "name": "Bambu Lab P1S",
+      "bed_x": 256.0,
+      "bed_y": 256.0,
+      "bed_z": 256.0,
+      "margin_mm": 5.0,
+      "clearance_mm": 0.15
+    },
+    {
+      "name": "Bambu Lab X1C",
+      "bed_x": 256.0,
+      "bed_y": 256.0,
+      "bed_z": 256.0,
+      "margin_mm": 5.0,
+      "clearance_mm": 0.15
+    },
+    {
+      "name": "Prusa MK4",
+      "bed_x": 250.0,
+      "bed_y": 210.0,
+      "bed_z": 220.0,
+      "margin_mm": 5.0,
+      "clearance_mm": 0.15
+    },
+    {
+      "name": "Ender 3",
+      "bed_x": 220.0,
+      "bed_y": 220.0,
+      "bed_z": 250.0,
+      "margin_mm": 5.0,
+      "clearance_mm": 0.2
+    },
+    {
+      "name": "Custom",
+      "bed_x": 200.0,
+      "bed_y": 200.0,
+      "bed_z": 200.0,
+      "margin_mm": 5.0,
+      "clearance_mm": 0.15
+    }
+  ]
+}
