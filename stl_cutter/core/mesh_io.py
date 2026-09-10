@@ -14,10 +14,19 @@ from typing import Iterable
 
 import numpy as np
 import trimesh
+from scipy.spatial import cKDTree
 
 log = logging.getLogger(__name__)
 
 SUPPORTED_INPUT = (".stl", ".3mf")
+
+#: Toleranser som provas när sprickor i ytan ska svetsas ihop, i mm. Den
+#: största ligger under vad en 3D-skrivare kan återge, så geometrin påverkas
+#: inte märkbart.
+WELD_TOLERANCES_MM = (0.0001, 0.001, 0.01, 0.05, 0.1)
+
+#: En reparation som ändrar volymen mer än så här har förstört något.
+MAX_REPAIR_VOLUME_CHANGE = 0.01
 
 
 @dataclass
@@ -31,6 +40,8 @@ class MeshInfo:
     volume_mm3: float
     extents_mm: tuple[float, float, float]
     repairs: list[str] = field(default_factory=list)
+    #: Kanter som saknar granne efter reparationen. 0 betyder en hel mesh.
+    open_edges: int = 0
 
     @property
     def face_count(self) -> int:
@@ -38,7 +49,11 @@ class MeshInfo:
 
     def summary(self) -> str:
         x, y, z = self.extents_mm
-        state = "hel (watertight)" if self.watertight else "INTE hel - hål i ytan"
+        state = (
+            "hel (watertight)"
+            if self.watertight
+            else f"INTE hel - {self.open_edges} öppna kanter"
+        )
         return (
             f"{self.path.name}: {x:.1f} x {y:.1f} x {z:.1f} mm, "
             f"{self.face_count} trianglar, volym {self.volume_mm3 / 1000.0:.1f} cm3, {state}"
@@ -62,9 +77,74 @@ def _as_single_mesh(loaded) -> trimesh.Trimesh:
     raise ValueError(f"Kan inte tolka inläst geometri av typen {type(loaded)!r}.")
 
 
-def repair_mesh(mesh: trimesh.Trimesh) -> list[str]:
-    """Städa en mesh på plats. Returnerar en lista över vad som gjordes."""
+def open_edge_count(mesh: trimesh.Trimesh) -> int:
+    """Antal kanter som saknar granne - måttet slicers kallar "non-manifold edges"."""
+    try:
+        singles = trimesh.grouping.group_rows(mesh.edges_sorted, require_count=1)
+        return int(len(singles))
+    except Exception:  # pragma: no cover - degenererad geometri
+        return 0
+
+
+def weld_vertices(mesh: trimesh.Trimesh, tolerance_mm: float) -> trimesh.Trimesh:
+    """Slå ihop vertices som ligger närmare varandra än `tolerance_mm`.
+
+    `merge_vertices()` slår bara ihop punkter som är exakt lika (eller som
+    avrundas lika), och missar därför sprickor från CAD-export där hörnen
+    ligger en hårsmån isär. Här grupperas punkterna i stället efter avstånd
+    med en KD-trädsökning, vilket sluter den sortens springor.
+    """
+    vertices = np.asarray(mesh.vertices, dtype=float)
+    pairs = cKDTree(vertices).query_pairs(float(tolerance_mm), output_type="ndarray")
+    if len(pairs) == 0:
+        return mesh
+
+    # Union-find: närliggande punkter hamnar i samma grupp.
+    parent = np.arange(len(vertices))
+
+    def find(index: int) -> int:
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    for first, second in pairs:
+        root_a, root_b = find(int(first)), find(int(second))
+        if root_a != root_b:
+            parent[max(root_a, root_b)] = min(root_a, root_b)
+
+    roots = np.array([find(i) for i in range(len(vertices))])
+    _, inverse = np.unique(roots, return_inverse=True)
+
+    # Varje grupp ersätts av sin tyngdpunkt.
+    merged = np.zeros((int(inverse.max()) + 1, 3), dtype=float)
+    np.add.at(merged, inverse, vertices)
+    merged /= np.bincount(inverse)[:, None]
+
+    welded = trimesh.Trimesh(vertices=merged, faces=inverse[np.asarray(mesh.faces)], process=False)
+    welded.update_faces(welded.nondegenerate_faces())
+    welded.update_faces(welded.unique_faces())
+    welded.remove_unreferenced_vertices()
+    welded.merge_vertices()
+    return welded
+
+
+def repair_mesh(mesh: trimesh.Trimesh, weld: bool = True) -> tuple[trimesh.Trimesh, list[str]]:
+    """Laga en mesh så gott det går.
+
+    Returnerar (mesh, lista över vad som gjordes). Meshen kan vara en ny
+    instans om vertices behövde svetsas ihop, så använd alltid returvärdet.
+
+    Ordningen är från försiktigt till mer ingripande, och varje steg görs bara
+    om meshen fortfarande inte är sluten:
+
+    1. slå ihop identiska vertices och kasta dubblerade eller platta trianglar,
+    2. svetsa ihop vertices som ligger nära varandra (sprickor),
+    3. fyll återstående hål,
+    4. rätta normalriktningar.
+    """
     actions: list[str] = []
+    volume_before = float(abs(mesh.volume))
 
     before_vertices = len(mesh.vertices)
     mesh.merge_vertices()
@@ -76,7 +156,29 @@ def repair_mesh(mesh: trimesh.Trimesh) -> list[str]:
     mesh.update_faces(mesh.nondegenerate_faces())
     mesh.remove_unreferenced_vertices()
     if len(mesh.faces) < before_faces:
-        actions.append(f"tog bort {before_faces - len(mesh.faces)} dubblerade/degenererade trianglar")
+        actions.append(
+            f"tog bort {before_faces - len(mesh.faces)} dubblerade/degenererade trianglar"
+        )
+
+    if weld and not mesh.is_watertight:
+        openings = open_edge_count(mesh)
+        for tolerance in WELD_TOLERANCES_MM:
+            candidate = weld_vertices(mesh, tolerance)
+            changed = abs(abs(candidate.volume) - volume_before)
+            if volume_before > 0 and changed / volume_before > MAX_REPAIR_VOLUME_CHANGE:
+                log.debug("Svetsning med %.4f mm ändrade volymen för mycket - avbryter.", tolerance)
+                break
+            mesh = candidate
+            if mesh.is_watertight:
+                actions.append(
+                    f"svetsade ihop {openings} öppna kanter (tolerans {tolerance:g} mm)"
+                )
+                break
+        else:
+            if open_edge_count(mesh) < openings:
+                actions.append(
+                    f"svetsade ihop {openings - open_edge_count(mesh)} av {openings} öppna kanter"
+                )
 
     if not mesh.is_watertight:
         try:
@@ -89,7 +191,7 @@ def repair_mesh(mesh: trimesh.Trimesh) -> list[str]:
         mesh.fix_normals()
         actions.append("rättade normalriktningar")
 
-    return actions
+    return mesh, actions
 
 
 def load_mesh(path: str | Path, repair: bool = True) -> MeshInfo:
@@ -106,10 +208,16 @@ def load_mesh(path: str | Path, repair: bool = True) -> MeshInfo:
     mesh = _as_single_mesh(loaded)
     mesh.process(validate=True)
 
-    repairs = repair_mesh(mesh) if repair else []
+    repairs: list[str] = []
+    if repair:
+        mesh, repairs = repair_mesh(mesh)
 
     if not mesh.is_watertight:
-        log.warning("Meshen %s är inte watertight - snitten kan bli oförutsägbara.", path.name)
+        log.warning(
+            "Meshen %s är inte sluten - %d öppna kanter kvar efter reparation.",
+            path.name,
+            open_edge_count(mesh),
+        )
 
     return MeshInfo(
         path=path,
@@ -119,6 +227,7 @@ def load_mesh(path: str | Path, repair: bool = True) -> MeshInfo:
         volume_mm3=float(abs(mesh.volume)),
         extents_mm=tuple(float(v) for v in mesh.extents),
         repairs=repairs,
+        open_edges=open_edge_count(mesh),
     )
 
 

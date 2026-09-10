@@ -71,7 +71,7 @@ fil -> mesh_io.load_mesh  -> MeshInfo
 
 | Klass | Modul | Innehåll |
 |-------|-------|----------|
-| `MeshInfo` | `mesh_io` | `path`, `mesh`, `watertight`, `winding_consistent`, `volume_mm3`, `extents_mm`, `repairs` |
+| `MeshInfo` | `mesh_io` | `path`, `mesh`, `watertight`, `winding_consistent`, `volume_mm3`, `extents_mm`, `repairs`, `open_edges` |
 | `PrinterProfile` | `printers` | `name`, `bed_x/y/z`, `margin_mm` (5), `clearance_mm` (0.15); `usable` = bädd − 2·marginal, `fits(extents)` |
 | `ContourInfo` | `analysis` | `area_mm2`, `perimeter_mm`, `thickness_mm` (största inskrivna cirkelns diameter), `bbox_mm` |
 | `SectionAnalysis` | `analysis` | `position_mm`, `axis`, `area_mm2`, `perimeter_mm`, `contour_count`, `min_wall_mm`, `roundness`, `aspect_ratio`, `bbox_mm`, `contours`, `empty`; egenskaper `cuts_thin_detail`, `is_flat`, `is_round`, `is_elongated` |
@@ -86,7 +86,7 @@ fil -> mesh_io.load_mesh  -> MeshInfo
 | `PlaneFrame` | `joints.base` | Lokalt system för ett snitt: `origin`, `u` (lång riktning), `v` (kort riktning, glidriktning), `n` (mot del B) |
 | `JointRecord` | `cutter` | Loggpost per fog: `cut_index`, `part_a`, `part_b`, `joint_type`, `requested_type`, `applied`, `warnings` |
 | `Part` | `cutter` | `index`, `mesh`; härlett: `volume_mm3`, `extents_mm`, `watertight` |
-| `CutResult` | `cutter` | `parts`, `original_volume_mm3`, `plan`, `warnings`; härlett: `volume_error`, `all_watertight` |
+| `CutResult` | `cutter` | `parts`, `original_volume_mm3`, `plan`, `warnings`, `joints`, `source_open_edges`; härlett: `volume_error`, `all_watertight`, `inherited_damage` |
 | `ExportResult` | `exporter` | `directory`, `part_files`, `report_file` |
 
 ## Nyckelalgoritmer
@@ -101,6 +101,29 @@ i `SplitPlan.transform` och appliceras innan snitten.
 ### Antal snitt (fas 1)
 
 Per axel: `ceil(storlek / (byggmått − 2·marginal))`.
+
+### Reparation vid inläsning
+
+`mesh_io.repair_mesh()` lagar en mesh i fyra steg, från försiktigt till mer
+ingripande, och gör bara nästa steg om meshen fortfarande inte är sluten:
+
+1. slå ihop identiska vertices, kasta dubblerade och platta trianglar,
+2. **svetsa ihop närliggande vertices** — `weld_vertices()` grupperar punkter
+   efter avstånd med ett KD-träd och union-find, och ersätter varje grupp med
+   dess tyngdpunkt. `merge_vertices()` slår bara ihop punkter som är exakt lika
+   (eller avrundas lika) och missar därför de hårfina springorna en CAD-export
+   lämnar efter sig. Toleranserna i `WELD_TOLERANCES_MM` provas i ordning
+   (0,0001–0,1 mm) tills meshen är sluten; den grövsta ligger under vad en
+   3D-skrivare kan återge. En svetsning som ändrar volymen mer än
+   `MAX_REPAIR_VOLUME_CHANGE` (1 %) förkastas, så tunna detaljer inte plattas ut,
+3. fyll återstående hål,
+4. rätta normalriktningar.
+
+`open_edge_count()` räknar kanter som saknar granne — samma mått som slicers
+kallar *non-manifold edges*. Det sparas i `MeshInfo.open_edges` och i
+`CutResult.source_open_edges`, så att en del som inte är sluten kan förklaras
+med att **originalet** var trasigt (`CutResult.inherited_damage`) i stället för
+att skyllas på kapningen. Varje del körs genom samma reparation efter snittet.
 
 ### Analys av snittytan (fas 2)
 

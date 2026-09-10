@@ -9,6 +9,7 @@ import numpy as np
 import trimesh
 
 from .joints import JointParams, build_joint, validate_parts
+from .mesh_io import open_edge_count, repair_mesh
 from .planner import Plane, SplitPlan
 from .progress import report
 
@@ -98,6 +99,13 @@ class CutResult:
     plan: SplitPlan
     warnings: list[str] = field(default_factory=list)
     joints: list[JointRecord] = field(default_factory=list)
+    #: Öppna kanter i originalmodellen. > 0 betyder att delarna ärver hål.
+    source_open_edges: int = 0
+
+    @property
+    def inherited_damage(self) -> bool:
+        """Kommer delarnas problem från en trasig originalmodell?"""
+        return self.source_open_edges > 0
 
     @property
     def total_volume_mm3(self) -> float:
@@ -119,6 +127,7 @@ class CutResult:
             "total_part_volume_mm3": round(self.total_volume_mm3, 3),
             "volume_error_percent": round(self.volume_error * 100.0, 4),
             "all_watertight": self.all_watertight,
+            "source_open_edges": self.source_open_edges,
             "warnings": list(self.warnings),
             "joints": [j.to_dict() for j in self.joints],
             "parts": [p.to_dict() for p in self.parts],
@@ -198,19 +207,32 @@ def cut_mesh(
         pieces = apply_plane(pieces, plane, engine=engine)
         log.debug("Efter snitt %d: %d delar", i, len(pieces))
 
+    # Var originalet redan trasigt? Då ärver delarna det, och det är inte
+    # snittningen som är felet.
+    source_open_edges = open_edge_count(mesh)
+
     parts: list[Part] = []
     for index, piece in enumerate(sorted(pieces, key=lambda m: tuple(m.bounds[0])), start=1):
-        piece.merge_vertices()
+        piece, _ = repair_mesh(piece)
         if not piece.is_watertight:
-            piece.fill_holes()
-        if not piece.is_winding_consistent or piece.volume < 0:
-            piece.fix_normals()
-        if not piece.is_watertight:
-            warnings.append(f"Del {index:02d} är inte watertight efter snittet.")
+            if source_open_edges > 0:
+                warnings.append(
+                    f"Del {index:02d} är inte sluten ({open_edge_count(piece)} öppna kanter). "
+                    "Originalmodellen hade hål, så delen ärver dem - kapningen är inte felet."
+                )
+            else:
+                warnings.append(
+                    f"Del {index:02d} är inte sluten efter snittet "
+                    f"({open_edge_count(piece)} öppna kanter)."
+                )
         parts.append(Part(index=index, mesh=piece))
 
     result = CutResult(
-        parts=parts, original_volume_mm3=original_volume, plan=plan, warnings=warnings
+        parts=parts,
+        original_volume_mm3=original_volume,
+        plan=plan,
+        warnings=warnings,
+        source_open_edges=source_open_edges,
     )
 
     if result.volume_error > VOLUME_TOLERANCE:

@@ -155,3 +155,69 @@ def test_parts_fit_still_catches_a_part_that_is_too_big(big_box, printer):
     result.parts[0].mesh = oversized  # låtsas att en del inte kapades
 
     assert 1 in parts_fit(result, printer)
+
+
+# --------------------------------------------------------------------------
+# Trasiga originalmodeller
+# --------------------------------------------------------------------------
+
+
+def test_a_repairable_model_gives_whole_parts(printer):
+    """Sprickor i originalet ska lagas vid inläsning, inte ärvas av delarna."""
+    import numpy as np
+    import trimesh
+
+    from stl_cutter.core import mesh_io
+    from stl_cutter.core.planner import plan_splits
+
+    cracked = trimesh.creation.box(extents=[600.0, 300.0, 40.0]).subdivide()
+    cracked.unmerge_vertices()
+    cracked.vertices += np.random.default_rng(7).normal(0, 0.005, cracked.vertices.shape)
+    assert not cracked.is_watertight
+
+    repaired, _ = mesh_io.repair_mesh(cracked)
+    assert repaired.is_watertight
+
+    plan = plan_splits(repaired, printer, auto_orient=False, analyse=False)
+    result = cut_mesh(repaired, plan)
+
+    assert result.all_watertight
+    assert not result.inherited_damage
+    assert result.warnings == []
+
+
+def test_damage_that_cannot_be_repaired_is_reported_as_inherited(printer):
+    """Går originalet inte att laga ska varningen säga att felet är ärvt."""
+    import numpy as np
+    import trimesh
+
+    from stl_cutter.core.planner import plan_splits
+
+    broken = trimesh.creation.box(extents=[600.0, 300.0, 100.0]).subdivide().subdivide()
+    keep = np.ones(len(broken.faces), dtype=bool)
+    keep[::4] = False  # för mycket borta för att fyllas
+    broken.update_faces(keep)
+    assert not broken.is_watertight
+
+    plan = plan_splits(broken, printer, auto_orient=False, analyse=False)
+    result = cut_mesh(broken, plan)
+
+    if not result.all_watertight:
+        assert result.inherited_damage
+        assert result.source_open_edges > 0
+        assert any("ärver" in w for w in result.warnings)
+        assert not any("efter snittet" in w for w in result.warnings)
+
+
+def test_report_records_the_source_damage(tmp_path, big_box, printer):
+    import json
+
+    from stl_cutter.core import exporter
+    from stl_cutter.core.planner import plan_splits
+
+    plan = plan_splits(big_box, printer, auto_orient=False, analyse=False)
+    result = cut_mesh(big_box, plan)
+    export = exporter.export_parts(result, tmp_path / "ut", printer)
+
+    report = json.loads(export.report_file.read_text(encoding="utf-8"))
+    assert report["result"]["source_open_edges"] == 0

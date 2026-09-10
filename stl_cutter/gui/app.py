@@ -466,7 +466,11 @@ class MainWindow(QMainWindow):
         self.analyse_button.setEnabled(True)
 
         x, y, z = info.extents_mm
-        state = "Meshen är hel." if info.watertight else "Varning: meshen har hål."
+        state = (
+            "Meshen är hel."
+            if info.watertight
+            else f"Varning: {info.open_edges} öppna kanter — se meddelandet nedan."
+        )
         self.model_label.setText(
             f"<b>{info.path.name}</b><br>{x:.1f} × {y:.1f} × {z:.1f} mm<br>"
             f"Volym {info.volume_mm3 / 1000:.1f} cm³<br>{state}"
@@ -476,8 +480,10 @@ class MainWindow(QMainWindow):
             self.status(f"Reparation: {repair}")
         if not info.watertight:
             self.status(
-                "Modellen är inte helt sluten. Kapningen fungerar oftast ändå, "
-                "men kontrollera delarna efteråt.",
+                f"Modellen har {info.open_edges} öppna kanter som inte gick att laga. "
+                "Delarna kommer att ärva hålen, och din slicer kan klaga på dem. "
+                "Vill du vara säker: laga modellen först (se Felsökning i README) "
+                "och kapa om."
             )
         self.view.show_model(info.mesh)
         self.on_bed_toggled()
@@ -679,9 +685,14 @@ class MainWindow(QMainWindow):
                     f"Snitt {joint.cut_index}: fogen {joint.requested_type} fick inte plats, "
                     f"använde {joint.joint_type} i stället."
                 )
-        for problem in result.validate().values():
-            for issue in problem:
-                self.status(issue, error=True)
+        # Ärvda hål från en trasig originalmodell är inte ett fel i kapningen.
+        for warning in result.warnings:
+            self.status(warning, error=not result.inherited_damage)
+        if result.inherited_damage and not result.all_watertight:
+            self.status(
+                "Delarna går oftast att skriva ut ändå - testa dem i din slicer. "
+                "Klagar den, laga originalmodellen och kapa om."
+            )
 
         too_big = parts_fit(result, self.current_printer())
         if too_big:
