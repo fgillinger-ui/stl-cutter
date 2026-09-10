@@ -585,3 +585,64 @@ def test_unrepairable_damage_is_explained_not_blamed_on_the_cut(qapp, window, tm
     if not window.result.all_watertight:
         assert "FEL: Del" not in status, "ärvda hål ska inte rapporteras som fel i kapningen"
         assert "slicer" in status
+
+
+def test_background_can_be_switched(window):
+    from stl_cutter.gui.view3d import DARK_BACKGROUND, LIGHT_BACKGROUND, MODEL_COLOR_ON_DARK
+
+    window.light_checkbox.setChecked(True)
+    assert window.view._light
+    assert window.settings.light_background
+
+    window.light_checkbox.setChecked(False)
+
+    assert not window.view._light
+    assert window.view.model_color == MODEL_COLOR_ON_DARK
+    assert LIGHT_BACKGROUND != DARK_BACKGROUND
+
+
+def test_background_choice_is_remembered(qapp, window, tmp_path):
+    window.light_checkbox.setChecked(False)
+
+    window.close()
+
+    saved = Settings.load(Path(tmp_path) / "config" / "stl-cutter" / "settings.json")
+    assert saved.light_background is False
+
+
+def test_switching_background_keeps_the_model(qapp, window, model_file):
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+    assert window.view._model_item is not None
+
+    window.light_checkbox.setChecked(False)
+    window.light_checkbox.setChecked(True)
+
+    assert window.view._model_item is not None
+
+
+def test_a_multi_body_model_is_merged_and_cut_cleanly(qapp, window, tmp_path):
+    """En fil med flera kroppar ska bli en hel solid, inte trasiga delar."""
+    import trimesh
+
+    first = trimesh.creation.box(extents=[400.0, 200.0, 40.0])
+    second = trimesh.creation.box(extents=[400.0, 200.0, 40.0])
+    second.apply_translation([400.0, 0.0, 0.0])
+    path = tmp_path / "flerkropp.stl"
+    mesh_io.save_stl(trimesh.util.concatenate([first, second]), path)
+    window.settings.last_output_dir = str(tmp_path / "ut")
+
+    window.load_model(path)
+    wait_for_worker(qapp, window)
+
+    assert window.mesh_info.watertight
+    assert "Meshen är hel" in window.model_label.text()
+
+    window.start_analysis()
+    wait_for_worker(qapp, window)
+    window.start_cut()
+    wait_for_worker(qapp, window)
+
+    assert window.result.all_watertight
+    assert "FEL:" not in window.status_box.toPlainText()
+    assert any(j.applied for j in window.result.joints)

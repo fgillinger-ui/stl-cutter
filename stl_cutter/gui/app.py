@@ -236,13 +236,17 @@ class MainWindow(QMainWindow):
         container = QWidget()
         layout = QVBoxLayout(container)
 
-        self.view = ModelView()
+        self.view = ModelView(light_background=self.settings.light_background)
         layout.addWidget(self.view, 1)
 
         controls = QHBoxLayout()
         self.bed_checkbox = QCheckBox("Visa byggplatta")
         self.bed_checkbox.stateChanged.connect(self.on_bed_toggled)
         controls.addWidget(self.bed_checkbox)
+
+        self.light_checkbox = QCheckBox("Ljus bakgrund")
+        self.light_checkbox.stateChanged.connect(self.on_background_toggled)
+        controls.addWidget(self.light_checkbox)
 
         controls.addWidget(QLabel("Spräng isär:"))
         self.explode_slider = QSlider(Qt.Horizontal)
@@ -324,6 +328,7 @@ class MainWindow(QMainWindow):
         self.demount_radio.setChecked(self.settings.assembly_intent == "demountable")
         self.glue_radio.setChecked(self.settings.assembly_intent != "demountable")
         self.bed_checkbox.setChecked(self.settings.show_bed)
+        self.light_checkbox.setChecked(self.settings.light_background)
         self.explode_slider.setValue(int(self.settings.explode_mm))
         if self.settings.last_output_dir:
             self.output_label.setText(self.settings.last_output_dir)
@@ -469,7 +474,7 @@ class MainWindow(QMainWindow):
         state = (
             "Meshen är hel."
             if info.watertight
-            else f"Varning: {info.open_edges} öppna kanter — se meddelandet nedan."
+            else f"Varning: {info.open_edges} trasiga kanter — se meddelandet nedan."
         )
         self.model_label.setText(
             f"<b>{info.path.name}</b><br>{x:.1f} × {y:.1f} × {z:.1f} mm<br>"
@@ -480,7 +485,8 @@ class MainWindow(QMainWindow):
             self.status(f"Reparation: {repair}")
         if not info.watertight:
             self.status(
-                f"Modellen har {info.open_edges} öppna kanter som inte gick att laga. "
+                f"Modellen har {info.open_edges} kanter som inte delas av exakt två "
+                "trianglar och som inte gick att laga. "
                 "Delarna kommer att ärva hålen, och din slicer kan klaga på dem. "
                 "Vill du vara säker: laga modellen först (se Felsökning i README) "
                 "och kapa om."
@@ -714,6 +720,11 @@ class MainWindow(QMainWindow):
         self.settings.explode_mm = float(value)
         self.view.set_explode(float(value))
 
+    def on_background_toggled(self, *_args) -> None:
+        light = self.light_checkbox.isChecked()
+        self.settings.light_background = light
+        self.view.set_light_background(light)
+
     def on_bed_toggled(self, *_args) -> None:
         visible = self.bed_checkbox.isChecked()
         self.settings.show_bed = visible
@@ -739,5 +750,6 @@ class MainWindow(QMainWindow):
         self.settings.assembly_intent = self.current_intent()
         self.settings.clearance_mm = self.clearance.value()
         self.settings.margin_mm = self.margin.value()
+        self.settings.light_background = self.light_checkbox.isChecked()
         self.settings.save()
         event.accept()

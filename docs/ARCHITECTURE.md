@@ -104,9 +104,23 @@ Per axel: `ceil(storlek / (byggmått − 2·marginal))`.
 
 ### Reparation vid inläsning
 
-`mesh_io.repair_mesh()` lagar en mesh i fyra steg, från försiktigt till mer
+**Flera kroppar i samma fil** — en CAD-fil, särskilt 3MF, innehåller ofta flera
+separata solider. `merge_bodies()` slår ihop dem med en **boolean union** i
+stället för att bara lägga trianglarna i samma mesh. Skillnaden är avgörande:
+`concatenate` ger en mesh där kanterna mellan två kroppar delas av fyra
+trianglar i stället för två, och slicern rapporterar *non-manifold edges*.
+Unionen tar bort de inre väggarna. Har filen redan tappat kroppsindelningen (en
+STL) hittar reparationen tillbaka genom att dela upp meshen i sammanhängande
+komponenter och unionera dem.
+
+`mesh_io.repair_mesh()` lagar en mesh i fem steg, från försiktigt till mer
 ingripande, och gör bara nästa steg om meshen fortfarande inte är sluten:
 
+0. slå ihop flera kroppar till en solid, när meshen har kanter med fler än två
+   trianglar eller består av flera slutna skal (`body_count > 1`). Volymen får
+   minska här — överlappande kroppar räknas dubbelt innan unionen, så det är
+   unionens volym som är den riktiga — men inte under
+   `MIN_UNION_VOLUME_FRACTION` (50 %),
 1. slå ihop identiska vertices, kasta dubblerade och platta trianglar,
 2. **svetsa ihop närliggande vertices** — `weld_vertices()` grupperar punkter
    efter avstånd med ett KD-träd och union-find, och ersätter varje grupp med
@@ -119,8 +133,11 @@ ingripande, och gör bara nästa steg om meshen fortfarande inte är sluten:
 3. fyll återstående hål,
 4. rätta normalriktningar.
 
-`open_edge_count()` räknar kanter som saknar granne — samma mått som slicers
-kallar *non-manifold edges*. Det sparas i `MeshInfo.open_edges` och i
+`bad_edges()` returnerar (kanter utan granne, kanter med fler än två grannar).
+Det första är hål, det andra ytor som ligger på varandra. `open_edge_count()`
+summerar dem — samma mått som slicers kallar *non-manifold edges*. Att bara
+räkna hål räckte inte: en modell byggd av flera kroppar har noll hål men är
+ändå inte en giltig solid. Det sparas i `MeshInfo.open_edges` och i
 `CutResult.source_open_edges`, så att en del som inte är sluten kan förklaras
 med att **originalet** var trasigt (`CutResult.inherited_damage`) i stället för
 att skyllas på kapningen. Varje del körs genom samma reparation efter snittet.
@@ -317,7 +334,10 @@ rapport. Fönstret fryser aldrig, och knappar avaktiveras medan arbete pågår.
 **Fel** — `workers.friendly_error()` översätter undantag till svenska
 meddelanden i statusrutan. Stacktracen går bara till loggfilen.
 
-**3D-vyn** — `gui.view3d` skiljer på ren geometri (`part_colors()`,
+**3D-vyn** — bakgrunden går att växla mellan ljus (standard) och mörk med en
+kryssruta; modellens och byggplattans färger byts med den, så att inget
+försvinner mot underlaget. Valet sparas i inställningarna.
+`gui.view3d` skiljer på ren geometri (`part_colors()`,
 `explode_offsets()`, `plane_quad()`, `bed_grid()`, testbara utan grafikkort) och
 `ModelView`, som ritar. Modellen visas som en mesh, snittplanen som
 halvtransparenta plan, och efter kapning delarna i olika färger med en slider
