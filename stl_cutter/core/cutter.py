@@ -10,6 +10,7 @@ import trimesh
 
 from .joints import JointParams, build_joint, validate_parts
 from .planner import Plane, SplitPlan
+from .progress import report
 
 log = logging.getLogger(__name__)
 
@@ -176,6 +177,7 @@ def cut_mesh(
     joints: bool = False,
     printer=None,
     force_joint: str | None = None,
+    progress=None,
 ) -> CutResult:
     """Applicera planens orientering och snitt och returnera delarna.
 
@@ -190,7 +192,9 @@ def cut_mesh(
 
     warnings: list[str] = []
     pieces: list[trimesh.Trimesh] = [oriented]
+    total = max(len(plan.planes), 1)
     for i, plane in enumerate(plan.planes, start=1):
+        report(progress, 0.5 * (i - 1) / total, f"Kapar snitt {i} av {total}")
         pieces = apply_plane(pieces, plane, engine=engine)
         log.debug("Efter snitt %d: %d delar", i, len(pieces))
 
@@ -220,7 +224,8 @@ def cut_mesh(
         log.info("Volymavvikelse efter snitt: %.3f %%", result.volume_error * 100)
 
     if joints:
-        apply_joints(result, printer=printer, force_joint=force_joint)
+        apply_joints(result, printer=printer, force_joint=force_joint, progress=progress)
+    report(progress, 1.0, f"Klar - {len(parts)} delar")
 
     if len(parts) != plan.part_count:
         log.info(
@@ -310,6 +315,7 @@ def apply_joints(
     result: "CutResult",
     printer=None,
     force_joint: str | None = None,
+    progress=None,
 ) -> "CutResult":
     """Bygg fogar mellan alla angränsande delar enligt planens rekommendationer."""
     pairs = find_pairs(result.parts, result.plan)
@@ -317,7 +323,12 @@ def apply_joints(
         log.info("Inga angränsande delar att foga ihop.")
         return result
 
-    for part_a, part_b, cut in pairs:
+    for number, (part_a, part_b, cut) in enumerate(pairs, start=1):
+        report(
+            progress,
+            0.5 + 0.5 * (number - 1) / len(pairs),
+            f"Bygger fog {number} av {len(pairs)}",
+        )
         params = _params_for(cut, printer, force_joint)
         if params.joint_type == "none":
             continue

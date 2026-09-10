@@ -3,8 +3,8 @@
 Detta dokument beskriver modulerna och dataklasserna i `stl_cutter`.
 **Kommande faser ska läsa och uppdatera den här filen.**
 
-Status: fas 1 (grundstruktur, plana snitt), fas 2 (analys och rekommendation) och
-fas 3 (foggeometri) är klara.
+Status: fas 1 (grundstruktur, plana snitt), fas 2 (analys och rekommendation),
+fas 3 (foggeometri) och fas 4 (grafiskt gränssnitt) är klara.
 
 ## Teknikval (fastställt)
 
@@ -34,6 +34,14 @@ stl_cutter/
       puzzle.py       #   pusselprofil (sinus eller nyckelhål)
       screw.py        #   M3-skruv med mutterficka + styrpinnar
       __init__.py     #   build_joint(): val, kontroll och fallback-kedja
+    progress.py       # framsteg och avbrott för långa operationer          [fas 4]
+  gui/                # grafiskt gränssnitt (PySide6)                       [fas 4]
+    app.py            #   MainWindow: arbetsflödet i fem steg
+    view3d.py         #   ModelView (pyqtgraph.opengl) + rena geometrihjälpare
+    workers.py        #   QThread-arbetare, avbrott och begripliga felmeddelanden
+    settings.py       #   ~/.config/stl-cutter/settings.json
+    logging_setup.py  #   ~/.local/share/stl-cutter/log.txt
+    paths.py          #   XDG-sökvägar
 data/printers.json    # inbyggda profiler
 ```
 
@@ -261,12 +269,51 @@ rapporterar problem per del; `CutResult.validate()` är genvägen.
 Vid `--dry-run` är `result` `null`. Med `--no-analysis` är `analysis`, `score`,
 `recommendation` `null` och `alternatives` tom.
 
+### Grafiskt gränssnitt (fas 4)
+
+`stl_cutter/gui/` anropar bara det publika kärn-API:et. Startas med
+`python -m stl_cutter.gui` eller konsolskriptet `stl-cutter-gui`.
+
+**Arbetsflöde** — vänsterpanelen läses uppifrån och ner: 1. Modell (öppna eller
+dra-och-släpp, visar mått, volym och om meshen är hel), 2. Skrivare (profil +
+redigerbar byggvolym och marginal, "Spara som ny profil"), 3. Montering (limmas
+/ tas isär + tolerans), 4. Förslag ("Analysera" fyller en tabell med snitt,
+position, fogtyp i en dropdown och motivering), 5. Kapa och exportera (målmapp +
+"Kapa modellen"). Högerpanelen är 3D-vyn.
+
+**Trådar** — `gui.workers.Worker` är en `QThread` som kör en funktion vilken tar
+emot ett `progress`-argument. Kärnan anropar callbacken; trycker användaren på
+Avbryt kastar den `core.progress.Cancelled`, som avslutar arbetet vid nästa
+rapport. Fönstret fryser aldrig, och knappar avaktiveras medan arbete pågår.
+
+**Fel** — `workers.friendly_error()` översätter undantag till svenska
+meddelanden i statusrutan. Stacktracen går bara till loggfilen.
+
+**3D-vyn** — `gui.view3d` skiljer på ren geometri (`part_colors()`,
+`explode_offsets()`, `plane_quad()`, `bed_grid()`, testbara utan grafikkort) och
+`ModelView`, som ritar. Modellen visas som en mesh, snittplanen som
+halvtransparenta plan, och efter kapning delarna i olika färger med en slider
+som spränger isär dem radiellt från modellens mitt. Byggplattan visas som
+rutnät via en kryssruta.
+
+**Tillstånd** — `gui.settings.Settings` (dataklass) sparas som JSON i
+`~/.config/stl-cutter/settings.json` när fönstret stängs. En trasig eller
+saknad fil ger standardvärden i stället för ett fel.
+
+### API-tillägg för GUI:t (minimala)
+
+Kärnlogiken är oförändrad. Tre additiva tillägg gjordes:
+
+| Tillägg | Varför |
+|---------|--------|
+| `core/progress.py` med `Cancelled` och `report()` | Framsteg och avbrott utan att kärnan känner till Qt |
+| `progress=`-parameter på `plan_splits()`, `cut_mesh()` och `apply_joints()` | Progressbar och avbrytknapp |
+| `recommender.build_recommendation(joint_type, analysis, ...)` | Användaren byter fogtyp manuellt i tabellen; parametrarna räknas ut som vanligt men typen är given |
+
+Vill GUI:t byta fogtyp för ett snitt sätter det bara `CutInfo.recommendation`
+innan `cut_mesh(joints=True)` anropas.
+
 ## Planerade utökningar
 
-* **Fas 4** — `stl_cutter/gui/` (PySide6). GUI:t anropar endast befintligt API:
-  `mesh_io.load_mesh`, `plan_splits`, `cut_mesh(joints=True, force_joint=...)`,
-  `export_parts` samt `CutInfo.alternatives` för fogvalsdropdownen. Vill GUI:t
-  låta användaren välja fogtyp per snitt räcker det att sätta
-  `CutInfo.recommendation` innan `cut_mesh()` anropas.
 * **Fas 5** — `install.sh`, `.desktop`, ikon, `docs/JOINTS.md` (fogtypernas
   användningsområden och rekommenderade toleranser), CI-workflow.

@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+import os
+
+# Qt måste veta att det inte finns någon skärm innan det importeras.
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
 import pytest
 import trimesh
 

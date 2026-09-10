@@ -22,12 +22,14 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
+gui = ["PySide6>=6.6", "pyqtgraph>=0.13", "PyOpenGL>=3.1"]
 
 [project.scripts]
 stl-cutter = "stl_cutter.cli:main"
+stl-cutter-gui = "stl_cutter.gui:main"
 
 [tool.setuptools]
-packages = ["stl_cutter", "stl_cutter.core"]
+packages = ["stl_cutter", "stl_cutter.core", "stl_cutter.core.joints", "stl_cutter.gui"]
 
 [tool.setuptools.package-data]
 stl_cutter = []

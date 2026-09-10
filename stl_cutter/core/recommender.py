@@ -281,3 +281,41 @@ def explain(analysis: SectionAnalysis, best: JointRecommendation, index: int) ->
         params = ", ".join(f"{k}={v}" for k, v in best.params.items())
         lines.append(f"  Parametrar: {params}")
     return "\n".join(lines)
+
+
+def build_recommendation(
+    joint_type: str,
+    analysis: SectionAnalysis,
+    intent: AssemblyIntent = "glue",
+    printer: PrinterProfile | None = None,
+    clearance_mm: float | None = None,
+) -> JointRecommendation:
+    """Rekommendation för en *vald* fogtyp, även om regeln inte hade valt den.
+
+    Används när användaren byter fogtyp manuellt (GUI:t i fas 4) - parametrarna
+    räknas ut på samma sätt som vanligt, men typen är given.
+    """
+    if joint_type not in JOINT_TYPES:
+        raise ValueError(f"Okänd fogtyp {joint_type!r}. Kända: {', '.join(JOINT_TYPES)}")
+    if clearance_mm is None:
+        clearance_mm = printer.clearance_mm if printer else DEFAULT_CLEARANCE_MM
+
+    for candidate in _candidates(analysis, intent, clearance_mm):
+        if candidate.joint_type == joint_type:
+            return candidate
+
+    # Typen är inte lämplig här, men användaren har bett om den ändå.
+    builders = {
+        "none": lambda: {"surface": "plan", "clearance_mm": 0.0},
+        "pins": lambda: _pin_params(analysis, clearance_mm),
+        "dovetail": lambda: _dovetail_params(analysis, clearance_mm),
+        "puzzle": lambda: _puzzle_params(analysis, clearance_mm),
+        "screw": lambda: _screw_params(clearance_mm),
+    }
+    return JointRecommendation(
+        joint_type,
+        builders[joint_type](),
+        "Vald manuellt. Snittet uppfyller inte villkoren för den här fogtypen, "
+        "så passformen kan bli sämre än vanligt.",
+        0.2,
+    )

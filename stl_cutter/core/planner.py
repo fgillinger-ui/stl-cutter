@@ -18,6 +18,7 @@ import trimesh
 
 from .analysis import SectionAnalysis, analyse_section
 from .printers import PrinterProfile
+from .progress import report
 from .recommender import AssemblyIntent, JointRecommendation, recommend_joint
 
 log = logging.getLogger(__name__)
@@ -396,6 +397,8 @@ def _optimise_axis(
     usable: float,
     weights: dict | None,
     config: dict | None,
+    progress=None,
+    progress_span: tuple[float, float] = (0.0, 1.0),
 ) -> list[tuple[Plane, SectionAnalysis, CandidateScore, float]]:
     """Välj snittlägen längs en axel, ett i taget, med bibehållet antal delar."""
     low, high = float(bounds[0][axis]), float(bounds[1][axis])
@@ -414,7 +417,13 @@ def _optimise_axis(
         positions = candidate_positions(nominal, length, window, config)
 
         best = None
-        for position in positions:
+        start, end = progress_span
+        for step, position in enumerate(positions):
+            report(
+                progress,
+                start + (end - start) * ((i - 1) + step / max(len(positions), 1)) / max(divisions - 1, 1),
+                f"Analyserar snittläge {position:.0f} mm längs {AXIS_NAMES[axis]}",
+            )
             plane = _make_plane(bounds, axis, position)
             analysis = analyse_section(mesh, plane.origin, plane.normal, axis=axis)
             remaining = divisions - i
@@ -477,6 +486,7 @@ def plan_splits(
     assembly_intent: AssemblyIntent = "glue",
     weights: dict | None = None,
     score_config: dict | None = None,
+    progress=None,
 ) -> SplitPlan:
     """Ta fram en `SplitPlan`.
 
@@ -484,6 +494,7 @@ def plan_splits(
     en analys och en fogrekommendation. Med `analyse=False` läggs snitten
     jämnt fördelade utan analys - snabbt, och det som fas 1 gjorde.
     """
+    report(progress, 0.0, "Beräknar bästa orientering")
     if auto_orient:
         transform, orientation_name, _ = best_fit_orientation(mesh, printer, step_deg=step_deg)
     else:
@@ -498,9 +509,13 @@ def plan_splits(
     cuts: list[CutInfo] = []
     positions: dict[int, list[float]] = {}
     index = 0
-    for axis, count in enumerate(divisions):
-        if count < 2:
-            continue
+    axes_to_cut = [a for a, c in enumerate(divisions) if c > 1]
+    for order, axis in enumerate(axes_to_cut):
+        count = divisions[axis]
+        span = (
+            0.05 + 0.9 * order / len(axes_to_cut),
+            0.05 + 0.9 * (order + 1) / len(axes_to_cut),
+        )
         if analyse:
             picked = _optimise_axis(
                 oriented,
@@ -510,6 +525,8 @@ def plan_splits(
                 printer.usable[axis],
                 weights,
                 score_config,
+                progress=progress,
+                progress_span=span,
             )
         else:
             span = extents[axis] / count
@@ -537,6 +554,7 @@ def plan_splits(
                 info.alternatives = alternatives
             cuts.append(info)
 
+    report(progress, 1.0, "Planen är klar")
     nx, ny, nz = divisions
     return SplitPlan(
         cuts=cuts,
