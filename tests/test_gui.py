@@ -573,7 +573,7 @@ def test_unrepairable_damage_is_explained_not_blamed_on_the_cut(qapp, window, tm
     if window.mesh_info.watertight:
         pytest.skip("modellen gick att laga - inget ärvt fel att testa")
 
-    assert "öppna kanter" in window.model_label.text()
+    assert "trasiga kanter" in window.model_label.text()
     assert "ärver" in window.status_box.toPlainText() or "hålen" in window.status_box.toPlainText()
 
     window.start_analysis()
@@ -646,3 +646,56 @@ def test_a_multi_body_model_is_merged_and_cut_cleanly(qapp, window, tmp_path):
     assert window.result.all_watertight
     assert "FEL:" not in window.status_box.toPlainText()
     assert any(j.applied for j in window.result.joints)
+
+
+def test_a_picture_of_the_joint_is_shown(qapp, window, model_file):
+    """Bilden bredvid motiveringen ska visa den valda fogtypen."""
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+    window.start_analysis()
+    wait_for_worker(qapp, window)
+
+    # isVisible() kräver att toppfönstret visas; isHidden() speglar valet.
+    assert not window.joint_image.isHidden()
+    first = window.joint_image.pixmap().toImage()
+
+    combo = window.cut_table.cellWidget(0, 2)
+    combo.setCurrentIndex(combo.findData("pins"))
+
+    assert window.joint_image.pixmap().toImage() != first, "bilden ska följa fogvalet"
+
+
+def test_joint_help_dialog_opens(qapp, window, monkeypatch):
+    from stl_cutter.gui import joint_help
+
+    opened = []
+
+    class FakeDialog:
+        def __init__(self, labels, parent=None):
+            opened.append(labels)
+
+        def exec(self):
+            return 0
+
+    monkeypatch.setattr(joint_help, "JointHelpDialog", FakeDialog)
+    monkeypatch.setattr("stl_cutter.gui.app.JointHelpDialog", FakeDialog)
+
+    window.show_joint_help()
+
+    assert opened and "dovetail" in opened[0]
+
+
+def test_the_gui_survives_missing_joint_images(qapp, window, model_file, monkeypatch):
+    from pathlib import Path as _Path
+
+    from stl_cutter.gui import joint_images
+
+    monkeypatch.setattr(joint_images, "_CANDIDATES", (_Path("/finns/inte"),))
+
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+    window.start_analysis()
+    wait_for_worker(qapp, window)
+
+    assert window.joint_image.isHidden()
+    assert window.cut_table.rowCount() > 0

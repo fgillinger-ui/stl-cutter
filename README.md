@@ -204,8 +204,10 @@ stl-cutter printers --add "Min skrivare" --bed 300 300 400 --margin 8
 styrpinnar. Toleransen (`clearance_mm`) tas från skrivarprofilen — 0,15 mm för de
 flesta skrivare, 0,2 mm för Ender 3.
 
-[docs/JOINTS.md](docs/JOINTS.md) förklarar varje fogtyp närmare: när den passar,
-hur delarna monteras och vilken tolerans som brukar fungera.
+[docs/JOINTS.md](docs/JOINTS.md) förklarar varje fogtyp närmare **med bilder**:
+när den passar, hur delarna monteras och vilken tolerans som brukar fungera.
+Samma bilder finns i programmet under knappen *Fogtyper – vad är vad?* i steg 4,
+och en miniatyr visas bredvid motiveringen för det snitt du markerat.
 
 ### Så monteras de
 

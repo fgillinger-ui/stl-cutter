@@ -44,6 +44,8 @@ from ..core.cutter import cut_mesh, parts_fit
 from ..core.planner import plan_splits
 from ..core.printers import PrinterProfile, get_printer, load_printers, save_profile
 from ..core.recommender import JOINT_TYPES, build_recommendation
+from . import joint_images
+from .joint_help import JointHelpDialog
 from .paths import log_file
 from .settings import Settings
 from .view3d import ModelView
@@ -62,6 +64,9 @@ JOINT_LABELS = {
 }
 
 MAX_EXPLODE_MM = 200
+
+#: Bredd på bilden bredvid motiveringen.
+JOINT_THUMBNAIL_WIDTH = 180
 
 
 class MainWindow(QMainWindow):
@@ -204,13 +209,27 @@ class MainWindow(QMainWindow):
         self.cut_table.currentCellChanged.connect(self._on_row_selected)
         layout.addWidget(self.cut_table)
 
-        # Motiveringen får inte plats i kolumnen - visa hela för markerad rad.
+        # Motiveringen får inte plats i kolumnen - visa hela för markerad rad,
+        # med en bild som visar vad fogtypen faktiskt är.
+        details = QHBoxLayout()
+
+        self.joint_image = QLabel()
+        self.joint_image.setAlignment(Qt.AlignTop)
+        self.joint_image.setFixedWidth(JOINT_THUMBNAIL_WIDTH)
+        self.joint_image.setVisible(False)
+        details.addWidget(self.joint_image)
+
         self.motivation_label = QLabel("Markera ett snitt för att läsa hela motiveringen.")
         self.motivation_label.setWordWrap(True)
         self.motivation_label.setMinimumHeight(48)
         self.motivation_label.setAlignment(Qt.AlignTop)
         self.motivation_label.setStyleSheet("color: #444; padding: 4px;")
-        layout.addWidget(self.motivation_label)
+        details.addWidget(self.motivation_label, 1)
+        layout.addLayout(details)
+
+        self.joint_help_button = QPushButton("Fogtyper - vad är vad?")
+        self.joint_help_button.clicked.connect(self.show_joint_help)
+        layout.addWidget(self.joint_help_button)
         return box
 
     def _section_export(self) -> QGroupBox:
@@ -603,6 +622,7 @@ class MainWindow(QMainWindow):
         cut = self.plan.cuts[row]
         if cut.recommendation is None:
             self.motivation_label.setText("")
+            self.joint_image.setVisible(False)
             return
         alternatives = ""
         if len(cut.alternatives) > 1:
@@ -614,6 +634,20 @@ class MainWindow(QMainWindow):
         self.motivation_label.setText(
             f"<b>Snitt {cut.index}:</b> {cut.recommendation.motivation}{alternatives}"
         )
+        self._show_joint_image(cut.recommendation.joint_type)
+
+    def _show_joint_image(self, joint_type: str) -> None:
+        """Bild på den valda fogtypen, om den finns."""
+        picture = joint_images.pixmap(joint_type, width=JOINT_THUMBNAIL_WIDTH)
+        self.joint_image.setVisible(picture is not None)
+        if picture is not None:
+            self.joint_image.setPixmap(picture)
+            self.joint_image.setToolTip(joint_images.DESCRIPTIONS.get(joint_type, ""))
+
+    def show_joint_help(self) -> None:
+        """Öppna fönstret som visar alla fogtyper med bild."""
+        dialog = JointHelpDialog(JOINT_LABELS, self)
+        dialog.exec()
 
     def _on_joint_changed(self, row: int, _index: int) -> None:
         """Användaren valde en annan fogtyp för ett snitt."""
