@@ -6,7 +6,9 @@ så att varje del får plats. Verktyget körs lokalt på Linux (utvecklat på Ku
 Programmet analyserar varje snittyta, **väljer en lämplig fogtyp** (laxstjärt,
 styrpinnar, pusselprofil, skruv eller plan limfog) med motivering på svenska,
 och **bygger fogen i geometrin** — så att delarna går att passa ihop och limma
-eller skruva. Ett grafiskt gränssnitt kommer i nästa fas.
+eller skruva.
+
+Det finns både ett **grafiskt gränssnitt** och ett kommandoradsverktyg.
 
 ## Installation (Kubuntu)
 
@@ -27,7 +29,44 @@ python -m stl_cutter.cli --list-printers
 pytest
 ```
 
-## Användning
+## Använda det grafiska gränssnittet
+
+```bash
+cd ~/Dokument/stl-cutter
+source .venv/bin/activate
+stl-cutter-gui
+```
+
+(Går också att starta med `python -m stl_cutter.gui`.)
+
+Fönstret har en panel till vänster som du arbetar dig igenom uppifrån och ner,
+och en 3D-vy till höger.
+
+1. **Modell** — klicka *Öppna fil…* eller dra en STL- eller 3MF-fil in i
+   fönstret. Programmet visar mått, volym och om modellen är hel.
+2. **Skrivare** — välj din skrivare i listan. Måtten fylls i automatiskt men går
+   att ändra. Har du en skrivare som inte finns med: skriv in måtten och klicka
+   *Spara som ny profil*.
+3. **Montering** — ska delarna limmas ihop för gott, eller kunna tas isär igen?
+   Valet styr vilka fogtyper som föreslås. Toleransen är spelet i fogen; större
+   värde ger lösare passning.
+4. **Förslag** — klicka *Analysera*. Du får en tabell med ett snitt per rad:
+   var det ligger, vilken fogtyp programmet föreslår och varför. Håll dig till
+   förslaget eller välj en annan fogtyp i rullgardinsmenyn. Markera en rad för
+   att läsa hela motiveringen och se de näst bästa alternativen.
+5. **Kapa och exportera** — välj en målmapp och klicka *Kapa modellen*.
+
+I 3D-vyn ser du modellen, snittplanen som orange plan, och efter kapningen
+delarna i olika färger. Dra i reglaget *Spräng isär* för att se fogarna, och
+kryssa i *Visa byggplatta* för att se skrivarens plattstorlek som rutnät.
+
+Analys och kapning kan ta någon minut på stora modeller. Det går alltid att
+trycka *Avbryt* — fönstret slutar aldrig svara. Meddelanden visas i rutan
+längst ner; den fullständiga loggen skrivs till
+`~/.local/share/stl-cutter/log.txt`. Dina inställningar sparas i
+`~/.config/stl-cutter/settings.json`.
+
+## Använda kommandoraden
 
 Kapa en modell:
 
@@ -159,4 +198,9 @@ Större värde ger lösare passning.
   hela och användbara. Vill du styra valet själv, använd `--joint`.
 * **Analysen tar tid på stora modeller** — varje kandidatläge kräver ett
   tvärsnitt. Kör med `--no-analysis` för ett snabbt svar, eller `--dry-run`
-  för att bara se planen.
+  för att bara se planen. I GUI:t kan du avbryta när som helst.
+* **GUI:t startar inte** — kontrollera att PySide6 är installerat
+  (`pip install -r requirements.txt`). Saknas systembibliotek för Qt på en
+  avskalad installation: `sudo apt install libegl1 libgl1 libxkbcommon-x11-0`.
+* **3D-vyn är svart** — datorn saknar fungerande OpenGL-drivrutin. Resten av
+  programmet fungerar ändå, och kommandoraden påverkas inte.

@@ -6,3 +6,8 @@ scipy>=1.11
 networkx>=3.1
 lxml>=5.0
 pytest>=8.0
+
+# Grafiskt gränssnitt
+PySide6>=6.6
+pyqtgraph>=0.13
+PyOpenGL>=3.1
