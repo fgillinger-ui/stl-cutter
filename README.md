@@ -13,9 +13,38 @@ Det finns både ett **grafiskt gränssnitt** och ett kommandoradsverktyg.
 ## Installation (Kubuntu)
 
 ```bash
-sudo apt install python3-venv python3-pip
 git clone https://github.com/fgillinger-ui/stl-cutter.git
 cd stl-cutter
+./install.sh
+```
+
+Det är allt. Skriptet gör följande och skriver ut vad det gjorde:
+
+* installerar systembibliotek som Qt behöver (frågar efter ditt lösenord)
+* skapar en egen miljö i `~/.local/share/stl-cutter/venv` — den rör inte
+  systemets Python
+* lägger programmet i menyn under **STL Cutter** med ikon
+* gör kommandona `stl-cutter` och `stl-cutter-gui` tillgängliga
+* kapar en testmodell för att kontrollera att allt verkligen fungerar
+
+Kör skriptet igen när du hämtat en ny version — det är gjort för att köras om.
+Ligger inte `~/.local/bin` i din `PATH` säger skriptet till hur du fixar det.
+
+### Avinstallera
+
+```bash
+./install.sh --uninstall
+```
+
+Dina inställningar och egna skrivarprofiler i `~/.config/stl-cutter` lämnas
+kvar. Ta bort den mappen själv om du vill bli av med dem också.
+
+### Installera för hand
+
+Föredrar du att göra det själv:
+
+```bash
+sudo apt install python3-venv python3-pip libegl1 libgl1 libxkbcommon-x11-0
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
@@ -25,19 +54,17 @@ pip install -e .
 Kontrollera att allt fungerar:
 
 ```bash
-python -m stl_cutter.cli --list-printers
+stl-cutter --list-printers
 pytest
 ```
 
 ## Använda det grafiska gränssnittet
 
+Sök efter **STL Cutter** i programmenyn, eller kör i en terminal:
+
 ```bash
-cd ~/Dokument/stl-cutter
-source .venv/bin/activate
 stl-cutter-gui
 ```
-
-(Går också att starta med `python -m stl_cutter.gui`.)
 
 Fönstret har en panel till vänster som du arbetar dig igenom uppifrån och ner,
 och en 3D-vy till höger.
@@ -71,7 +98,7 @@ längst ner; den fullständiga loggen skrivs till
 Kapa en modell:
 
 ```bash
-python -m stl_cutter.cli cut modell.stl --printer "Bambu P1S" --out ./ut
+stl-cutter cut modell.stl --printer "Bambu P1S" --out ./ut
 ```
 
 Resultatet i `./ut` blir `part_01.stl`, `part_02.stl` … plus `split_report.json`
@@ -80,29 +107,30 @@ med planen, mått och volym per del.
 Se förslagen på fogtyper med motivering:
 
 ```bash
-python -m stl_cutter.cli cut modell.stl --printer "Bambu P1S" --out ./ut --explain
+stl-cutter cut modell.stl --printer "Bambu P1S" --out ./ut --explain
 ```
 
 Ska delarna kunna skruvas isär igen i stället för att limmas:
 
 ```bash
-python -m stl_cutter.cli cut modell.stl --printer "Bambu P1S" --out ./ut \
+stl-cutter cut modell.stl --printer "Bambu P1S" --out ./ut \
     --assembly demountable --explain
 ```
 
 Se bara planen utan att kapa:
 
 ```bash
-python -m stl_cutter.cli cut modell.stl --printer "Prusa MK4" --out ./ut --dry-run
+stl-cutter cut modell.stl --printer "Prusa MK4" --out ./ut --dry-run
 ```
 
 Lista skrivarprofiler:
 
 ```bash
-python -m stl_cutter.cli --list-printers
+stl-cutter --list-printers
 ```
 
-Efter `pip install -e .` finns även kommandot `stl-cutter` direkt i skalet.
+Kommandona går också att köra som `python -m stl_cutter.cli` respektive
+`python -m stl_cutter.gui` om du hellre vill det.
 
 ### Flaggor
 
@@ -132,7 +160,7 @@ Lägg till en egen profil — den sparas i `~/.config/stl-cutter/printers.json` 
 skriver inte över de inbyggda:
 
 ```bash
-python -m stl_cutter.cli printers --add "Min skrivare" --bed 300 300 400 --margin 8
+stl-cutter printers --add "Min skrivare" --bed 300 300 400 --margin 8
 ```
 
 ## Hur delningen fungerar
@@ -156,7 +184,10 @@ python -m stl_cutter.cli printers --add "Min skrivare" --bed 300 300 400 --margi
    provas ett enklare alternativ, och du får en varning i stället för ett
    kraschat program.
 
-Tekniska detaljer finns i [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+## Mer att läsa
+
+* [docs/JOINTS.md](docs/JOINTS.md) — fogtyperna, när de passar och hur du monterar dem
+* [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — hur programmet är byggt
 
 ## Fogtyper som kan föreslås
 
@@ -171,6 +202,9 @@ Tekniska detaljer finns i [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 Är snittytan större än 5 000 mm² kompletteras den valda fogen med två extra
 styrpinnar. Toleransen (`clearance_mm`) tas från skrivarprofilen — 0,15 mm för de
 flesta skrivare, 0,2 mm för Ender 3.
+
+[docs/JOINTS.md](docs/JOINTS.md) förklarar varje fogtyp närmare: när den passar,
+hur delarna monteras och vilken tolerans som brukar fungera.
 
 ### Så monteras de
 
@@ -199,8 +233,10 @@ Större värde ger lösare passning.
 * **Analysen tar tid på stora modeller** — varje kandidatläge kräver ett
   tvärsnitt. Kör med `--no-analysis` för ett snabbt svar, eller `--dry-run`
   för att bara se planen. I GUI:t kan du avbryta när som helst.
-* **GUI:t startar inte** — kontrollera att PySide6 är installerat
-  (`pip install -r requirements.txt`). Saknas systembibliotek för Qt på en
-  avskalad installation: `sudo apt install libegl1 libgl1 libxkbcommon-x11-0`.
+* **GUI:t startar inte** — kör `./install.sh` igen; det installerar
+  systembiblioteken Qt behöver och säger till om något saknas. Manuellt:
+  `sudo apt install libegl1 libgl1 libxkbcommon-x11-0`.
+* **Programmet syns inte i menyn** — logga ut och in igen, eller kör
+  `update-desktop-database ~/.local/share/applications`.
 * **3D-vyn är svart** — datorn saknar fungerande OpenGL-drivrutin. Resten av
   programmet fungerar ändå, och kommandoraden påverkas inte.

@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128"
+     role="img" aria-label="STL Cutter">
+  <title>STL Cutter</title>
+  <defs>
+    <linearGradient id="left" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#5aa9e6"/>
+      <stop offset="1" stop-color="#2f6fa8"/>
+    </linearGradient>
+    <linearGradient id="right" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f5a742"/>
+      <stop offset="1" stop-color="#d97b1b"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="4" y="4" width="120" height="120" rx="22" fill="#22262c"/>
+
+  <!-- Vänster halva av en kub, med laxstjärtens hane -->
+  <path d="M22 46 L58 30 L58 74 L22 90 Z" fill="url(#left)"/>
+  <path d="M58 44 L70 40 L74 48 L70 56 L58 60 Z" fill="url(#left)"/>
+
+  <!-- Höger halva, förskjuten, med urtaget för fogen -->
+  <path d="M78 40 L106 50 L106 94 L78 84 Z
+           M78 54 L86 51 L90 58 L86 66 L78 63 Z"
+        fill="url(#right)" fill-rule="evenodd"/>
+
+  <!-- Snittlinjen -->
+  <line x1="68" y1="18" x2="68" y2="110" stroke="#f2f4f7" stroke-width="3"
+        stroke-dasharray="7 6" stroke-linecap="round" opacity="0.85"/>
+</svg>

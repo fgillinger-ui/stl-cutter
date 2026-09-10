@@ -3,8 +3,9 @@
 Detta dokument beskriver modulerna och dataklasserna i `stl_cutter`.
 **Kommande faser ska läsa och uppdatera den här filen.**
 
-Status: fas 1 (grundstruktur, plana snitt), fas 2 (analys och rekommendation),
-fas 3 (foggeometri) och fas 4 (grafiskt gränssnitt) är klara.
+Status: alla fem faser är klara — grundstruktur och plana snitt (1), analys och
+rekommendation (2), foggeometri (3), grafiskt gränssnitt (4) samt paketering,
+installation och dokumentation (5).
 
 ## Teknikval (fastställt)
 
@@ -43,6 +44,10 @@ stl_cutter/
     logging_setup.py  #   ~/.local/share/stl-cutter/log.txt
     paths.py          #   XDG-sökvägar
 data/printers.json    # inbyggda profiler
+assets/stl-cutter.svg # programikon
+install.sh            # installation på Kubuntu, idempotent                [fas 5]
+.github/workflows/    # CI: pytest på Python 3.12 + shellcheck             [fas 5]
+docs/JOINTS.md        # fogtyperna för användaren                          [fas 5]
 ```
 
 Dataflöde:
@@ -313,7 +318,46 @@ Kärnlogiken är oförändrad. Tre additiva tillägg gjordes:
 Vill GUI:t byta fogtyp för ett snitt sätter det bara `CutInfo.recommendation`
 innan `cut_mesh(joints=True)` anropas.
 
-## Planerade utökningar
+## Paketering och installation (fas 5)
 
-* **Fas 5** — `install.sh`, `.desktop`, ikon, `docs/JOINTS.md` (fogtypernas
-  användningsområden och rekommenderade toleranser), CI-workflow.
+`install.sh` installerar programmet på Kubuntu/Ubuntu och är **idempotent** —
+kör om det för att uppdatera. Det gör i tur och ordning:
+
+1. **Systembibliotek** — letar efter `libEGL.so.1`, `libGL.so.1` och
+   `libxkbcommon-x11.so.0` med `ldconfig`, och provar `python3 -m venv --help`.
+   Det är mer pålitligt än att fråga `dpkg` om paketnamn, som skiljer sig mellan
+   utgåvor. Saknas något installeras det med `apt`, men **ett trasigt paketarkiv
+   stoppar inte installationen**: kommandoraden fungerar ändå, och användaren får
+   veta att bara GUI:t påverkas.
+2. **Virtuell miljö** i `~/.local/share/stl-cutter/venv`, återanvänds om den finns.
+3. **Ikon** till `~/.local/share/icons/hicolor/scalable/apps/`.
+4. **Menypost** `~/.local/share/applications/stl-cutter.desktop` som pekar rakt
+   på venv:ens `stl-cutter-gui`.
+5. **Genvägar** i `~/.local/bin`, med varning om mappen saknas i `PATH`.
+6. **Kontroll** — programmet startas *och kapar en riktig testmodell*. Att
+   `--list-printers` fungerar bevisar bara att paketet importeras; ett saknat
+   beroende djupare in märks först när något faktiskt ska göras.
+
+`./install.sh --uninstall` tar bort venv, menypost, ikon och genvägar, men
+lämnar användarens inställningar och logg kvar och säger var de finns.
+
+### CI
+
+`.github/workflows/tests.yml` kör vid PR mot `main` och vid push till `main`:
+
+* **pytest** på Python 3.12. Qt-biblioteken installeras på runnern och ett eget
+  steg kontrollerar att de går att importera — annars hade GUI-testerna hoppats
+  över tyst och CI:n gett falsk trygghet. Testerna körs med
+  `QT_QPA_PLATFORM=offscreen`.
+* **install.sh** kontrolleras med `bash -n` och `shellcheck --severity=warning`.
+
+### Beroenden
+
+Utöver de uppenbara krävs två som lätt glöms bort, eftersom `trimesh` laddar dem
+lat och först felar när de behövs:
+
+| Paket | Används av |
+|-------|-----------|
+| `rtree` | `Path2D.polygons_full` — all snittanalys. Utan den kraschar första analysen. |
+| `mapbox-earcut` | triangulering vid extrudering av polygoner (pussel- och laxstjärtsfogar) |
+
