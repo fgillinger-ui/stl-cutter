@@ -57,6 +57,22 @@ def build_parser() -> argparse.ArgumentParser:
         "--format", choices=["stl", "3mf"], default="stl", help="Filformat för delarna."
     )
     cut.add_argument("--margin", type=float, default=None, help="Överstyr marginal i mm.")
+    cut.add_argument(
+        "--assembly",
+        choices=["glue", "demountable"],
+        default="glue",
+        help="Ska delarna limmas ihop (glue) eller kunna tas isär (demountable)?",
+    )
+    cut.add_argument(
+        "--explain",
+        action="store_true",
+        help="Skriv analys och motivering för varje snitt på svenska.",
+    )
+    cut.add_argument(
+        "--no-analysis",
+        action="store_true",
+        help="Hoppa över analys av snittytor - snabbare, men snitten läggs jämnt fördelade.",
+    )
 
     printers = sub.add_parser("printers", help="Hantera skrivarprofiler.")
     printers.add_argument("--list", action="store_true", help="Visa profiler.")
@@ -85,9 +101,19 @@ def _cmd_cut(args: argparse.Namespace) -> int:
     for repair in info.repairs:
         print(f"  reparation: {repair}")
 
-    plan = plan_splits(info.mesh, printer, auto_orient=not args.no_orient)
+    plan = plan_splits(
+        info.mesh,
+        printer,
+        auto_orient=not args.no_orient,
+        analyse=not args.no_analysis,
+        assembly_intent=args.assembly,
+    )
     print()
     print(plan.describe())
+
+    if args.explain:
+        print()
+        print(plan.explain())
 
     if args.dry_run:
         report = exporter.write_plan_only(plan, args.out, printer, source=args.model)

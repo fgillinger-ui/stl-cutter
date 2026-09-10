@@ -3,9 +3,10 @@
 Delar upp STL- och 3MF-modeller som är för stora för 3D-skrivarens byggplatta,
 så att varje del får plats. Verktyget körs lokalt på Linux (utvecklat på Kubuntu).
 
-Just nu (fas 1) görs **raka, plana snitt** utan fogar. Analys av snittytor,
-rekommenderade fogtyper, foggeometri och ett grafiskt gränssnitt kommer i
-kommande faser.
+Just nu görs **raka, plana snitt**. Programmet analyserar varje snittyta och
+**rekommenderar vilken fogtyp** som passar (laxstjärt, styrpinnar, pusselprofil,
+skruv eller plan limfog) med motivering på svenska. Själva foggeometrin byggs
+i nästa fas; ett grafiskt gränssnitt kommer därefter.
 
 ## Installation (Kubuntu)
 
@@ -37,6 +38,19 @@ python -m stl_cutter.cli cut modell.stl --printer "Bambu P1S" --out ./ut
 Resultatet i `./ut` blir `part_01.stl`, `part_02.stl` … plus `split_report.json`
 med planen, mått och volym per del.
 
+Se förslagen på fogtyper med motivering:
+
+```bash
+python -m stl_cutter.cli cut modell.stl --printer "Bambu P1S" --out ./ut --explain
+```
+
+Ska delarna kunna skruvas isär igen i stället för att limmas:
+
+```bash
+python -m stl_cutter.cli cut modell.stl --printer "Bambu P1S" --out ./ut \
+    --assembly demountable --explain
+```
+
 Se bara planen utan att kapa:
 
 ```bash
@@ -60,6 +74,9 @@ Efter `pip install -e .` finns även kommandot `stl-cutter` direkt i skalet.
 | `--dry-run` | Skriv bara `split_report.json`, kapa inte. |
 | `--no-orient` | Rotera inte modellen automatiskt för bästa passform. |
 | `--margin MM` | Överstyr profilens marginal. |
+| `--assembly glue\|demountable` | Ska delarna limmas permanent eller kunna tas isär? Påverkar vilken fog som föreslås. |
+| `--explain` | Skriv analys och motivering för varje snitt på svenska. |
+| `--no-analysis` | Hoppa över analysen. Snabbare, men snitten läggs jämnt fördelade utan hänsyn till snittytan. |
 | `--format stl\|3mf` | Filformat för delarna (3MF faller tillbaka till STL om stöd saknas). |
 | `-v` | Utförlig loggning. |
 
@@ -84,10 +101,33 @@ python -m stl_cutter.cli printers --add "Min skrivare" --bed 300 300 400 --margi
 2. Modellen roteras till den orientering som ger minst antal delar (rotationer
    i 15°-steg runt X/Y/Z samt en PCA-baserad orientering).
 3. Antal delar per axel räknas ut som `ceil(storlek / (byggmått − 2·marginal))`.
-4. Snitten utförs med lock på snittytan, och volymen jämförs mot originalet
+4. Runt varje snittläge provas alternativa positioner (±15 % av modellens längd,
+   i steg om 2 mm). Varje kandidat mäts — snittarea, antal öar, minsta
+   väggtjocklek, rundhet — och poängsätts. Snitt genom tunna väggar, genom många
+   separata öar eller som lämnar en nästan tom del undviks. Antalet delar ökar
+   aldrig av den här optimeringen.
+5. Varje valt snitt får en rekommenderad fogtyp med motivering och de två näst
+   bästa alternativen, som hamnar i `split_report.json`.
+6. Snitten utförs med lock på snittytan, och volymen jämförs mot originalet
    (avvikelsen ska vara under 0,5 %).
 
 Tekniska detaljer finns i [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+## Fogtyper som kan föreslås
+
+| Typ | Passar när | Vad det betyder |
+|-----|-----------|-----------------|
+| `none` | snittet är tunnare än 4 mm | Plan yta som limmas. Ingen fog får plats. |
+| `puzzle` | 4–8 mm och platt snitt | Pusselprofil genom hela tjockleken, låser i sidled. |
+| `dovetail` | minst 8 mm och avlångt snitt | Laxstjärt som skjuts ihop längs snittet och drar ihop delarna. |
+| `pins` | minst 6 mm och rundaktigt snitt | Styrpinnar (dowels) som centrerar delarna. |
+| `screw` | demonterbart och minst 12 mm | M3-skruv med mutterficka plus två styrpinnar. |
+
+Är snittytan större än 5 000 mm² kompletteras den valda fogen med två extra
+styrpinnar. Toleransen (`clearance_mm`) tas från skrivarprofilen.
+
+I den här fasen **byggs inte** foggeometrin — förslagen skrivs till
+`split_report.json` och med `--explain` till skärmen. Snitten är fortfarande plana.
 
 ## Felsökning
 
@@ -97,3 +137,6 @@ Tekniska detaljer finns i [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
   rätt skrivarprofil används.
 * **Färre delar än planen anger** — modellen har hålrum, så vissa celler i
   rutnätet blir tomma. Det är förväntat.
+* **Analysen tar tid på stora modeller** — varje kandidatläge kräver ett
+  tvärsnitt. Kör med `--no-analysis` för ett snabbt svar, eller `--dry-run`
+  för att bara se planen.
