@@ -528,3 +528,60 @@ def test_drag_and_drop_rejects_other_files(window, tmp_path):
             return data
 
     assert window._dropped_path(FakeEvent()) is None
+
+
+# --------------------------------------------------------------------------
+# Trasiga modeller i gränssnittet
+# --------------------------------------------------------------------------
+
+
+def test_a_repairable_model_is_reported_as_whole(qapp, window, tmp_path):
+    """Sprickor lagas vid inläsning - användaren ska inte skrämmas i onödan."""
+    import numpy as np
+    import trimesh
+
+    cracked = trimesh.creation.box(extents=[600.0, 300.0, 40.0]).subdivide()
+    cracked.unmerge_vertices()
+    cracked.vertices += np.random.default_rng(11).normal(0, 0.005, cracked.vertices.shape)
+    path = tmp_path / "sprickig.stl"
+    mesh_io.save_stl(cracked, path)
+
+    window.load_model(path)
+    wait_for_worker(qapp, window)
+
+    assert window.mesh_info.watertight
+    assert "Meshen är hel" in window.model_label.text()
+    assert any("svetsade" in line for line in window.status_box.toPlainText().splitlines())
+
+
+def test_unrepairable_damage_is_explained_not_blamed_on_the_cut(qapp, window, tmp_path):
+    """Ärvda hål ska förklaras, inte rapporteras som FEL i kapningen."""
+    import numpy as np
+    import trimesh
+
+    broken = trimesh.creation.box(extents=[600.0, 300.0, 100.0]).subdivide().subdivide()
+    keep = np.ones(len(broken.faces), dtype=bool)
+    keep[::4] = False
+    broken.update_faces(keep)
+    path = tmp_path / "trasig.stl"
+    mesh_io.save_stl(broken, path)
+    window.settings.last_output_dir = str(tmp_path / "ut")
+
+    window.load_model(path)
+    wait_for_worker(qapp, window)
+
+    if window.mesh_info.watertight:
+        pytest.skip("modellen gick att laga - inget ärvt fel att testa")
+
+    assert "öppna kanter" in window.model_label.text()
+    assert "ärver" in window.status_box.toPlainText() or "hålen" in window.status_box.toPlainText()
+
+    window.start_analysis()
+    wait_for_worker(qapp, window)
+    window.start_cut()
+    wait_for_worker(qapp, window)
+
+    status = window.status_box.toPlainText()
+    if not window.result.all_watertight:
+        assert "FEL: Del" not in status, "ärvda hål ska inte rapporteras som fel i kapningen"
+        assert "slicer" in status

@@ -157,6 +157,11 @@ def _cmd_cut(args: argparse.Namespace) -> int:
     print(f"Volymavvikelse: {result.volume_error * 100:.3f} %")
     for warning in result.warnings:
         print(f"VARNING: {warning}")
+    if result.inherited_damage and not result.all_watertight:
+        print(
+            "Delarna ärver hålen från originalmodellen. De går oftast att skriva ut "
+            "ändå - laga modellen och kapa om om din slicer klagar."
+        )
 
     problems = result.validate()
     for index, issues in problems.items():

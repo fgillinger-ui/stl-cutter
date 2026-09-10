@@ -221,8 +221,24 @@ Större värde ger lösare passning.
 
 ## Felsökning
 
-* **"Meshen är inte watertight"** — modellen har hål. Delarna går ofta ändå att
-  kapa, men kontrollera resultatet. Reparera gärna i t.ex. Blender först.
+* **"Modellen har N öppna kanter"** — modellen är inte helt sluten. Programmet
+  försöker laga den automatiskt: identiska hörn slås ihop, sprickor som är
+  smalare än 0,1 mm svetsas ihop, och små hål fylls. Står varningen kvar gick
+  skadan inte att laga, och delarna ärver hålen. Din slicer kan då rapportera
+  *non-manifold edges*.
+
+  Så här lagar du modellen på Linux (slicerns egen "Fix Model" är ofta
+  Windows-bara):
+
+  * **Blender** — importera modellen, aktivera tillägget *3D-Print Toolbox*
+    under Inställningar → Add-ons, och kör *Make Manifold* i sidopanelen.
+    Exportera som STL och kapa den filen i stället.
+  * **admesh** — `sudo apt install admesh`, sedan
+    `admesh --write-binary-stl=lagad.stl trasig.stl`. Snabbt, men klarar bara STL.
+  * **Meshlab** — `sudo apt install meshlab`, filtren *Remove Duplicate Vertices*
+    och *Close Holes*.
+
+  Testa alltid delarna i din slicer först — små hål stör ofta inte utskriften.
 * **Delar får fortfarande inte plats** — sänk `--margin` eller kontrollera att
   rätt skrivarprofil används.
 * **Färre delar än planen anger** — modellen har hålrum, så vissa celler i

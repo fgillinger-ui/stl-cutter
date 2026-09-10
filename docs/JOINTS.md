@@ -143,6 +143,10 @@ materialet. Du får en förklaring i statusrutan och i `split_report.json`. Prov
 att flytta snittet (analysera om med en annan skrivarprofil, eller kapa i en
 annan riktning) om du verkligen vill ha den fogtypen.
 
+**Slicern säger "non-manifold edges".** Originalmodellen hade hål som inte gick
+att laga, och delarna ärver dem. Se avsnittet Felsökning i README för hur du
+lagar modellen på Linux, och kapa sedan om.
+
 **Fogen sitter men delarna glappar.** Kontrollera att snittytorna är rena från
 strängar och elefantfot innan du monterar. Ett par drag med en fil på första
 lagret brukar räcka.
