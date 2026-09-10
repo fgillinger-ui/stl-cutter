@@ -3,10 +3,10 @@
 Delar upp STL- och 3MF-modeller som är för stora för 3D-skrivarens byggplatta,
 så att varje del får plats. Verktyget körs lokalt på Linux (utvecklat på Kubuntu).
 
-Just nu görs **raka, plana snitt**. Programmet analyserar varje snittyta och
-**rekommenderar vilken fogtyp** som passar (laxstjärt, styrpinnar, pusselprofil,
-skruv eller plan limfog) med motivering på svenska. Själva foggeometrin byggs
-i nästa fas; ett grafiskt gränssnitt kommer därefter.
+Programmet analyserar varje snittyta, **väljer en lämplig fogtyp** (laxstjärt,
+styrpinnar, pusselprofil, skruv eller plan limfog) med motivering på svenska,
+och **bygger fogen i geometrin** — så att delarna går att passa ihop och limma
+eller skruva. Ett grafiskt gränssnitt kommer i nästa fas.
 
 ## Installation (Kubuntu)
 
@@ -76,6 +76,8 @@ Efter `pip install -e .` finns även kommandot `stl-cutter` direkt i skalet.
 | `--margin MM` | Överstyr profilens marginal. |
 | `--assembly glue\|demountable` | Ska delarna limmas permanent eller kunna tas isär? Påverkar vilken fog som föreslås. |
 | `--explain` | Skriv analys och motivering för varje snitt på svenska. |
+| `--joint TYP` | Tvinga en fogtyp: `none`, `pins`, `dovetail`, `puzzle`, `screw`. Standard är `auto`, som följer rekommendationen per snitt. |
+| `--no-joints` | Bygg ingen foggeometri — bara plana snitt. |
 | `--no-analysis` | Hoppa över analysen. Snabbare, men snitten läggs jämnt fördelade utan hänsyn till snittytan. |
 | `--format stl\|3mf` | Filformat för delarna (3MF faller tillbaka till STL om stöd saknas). |
 | `-v` | Utförlig loggning. |
@@ -110,6 +112,10 @@ python -m stl_cutter.cli printers --add "Min skrivare" --bed 300 300 400 --margi
    bästa alternativen, som hamnar i `split_report.json`.
 6. Snitten utförs med lock på snittytan, och volymen jämförs mot originalet
    (avvikelsen ska vara under 0,5 %).
+7. Fogarna byggs in i delarna: den ena delen får hanen, den andra honan med
+   tolerans. Varje del kontrolleras efter varje steg — går en fog inte att bygga
+   provas ett enklare alternativ, och du får en varning i stället för ett
+   kraschat program.
 
 Tekniska detaljer finns i [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
@@ -124,10 +130,21 @@ Tekniska detaljer finns i [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 | `screw` | demonterbart och minst 12 mm | M3-skruv med mutterficka plus två styrpinnar. |
 
 Är snittytan större än 5 000 mm² kompletteras den valda fogen med två extra
-styrpinnar. Toleransen (`clearance_mm`) tas från skrivarprofilen.
+styrpinnar. Toleransen (`clearance_mm`) tas från skrivarprofilen — 0,15 mm för de
+flesta skrivare, 0,2 mm för Ender 3.
 
-I den här fasen **byggs inte** foggeometrin — förslagen skrivs till
-`split_report.json` och med `--explain` till skärmen. Snitten är fortfarande plana.
+### Så monteras de
+
+* **`pins`** — pinnarna sitter fast på ena delen och passar i hål i den andra.
+  Tryck ihop, limma om det ska sitta permanent.
+* **`dovetail`** — skjuts ihop i sidled, inte rakt på. Laxstjärten är bredare
+  längst ut, så delarna kan inte dras isär vinkelrätt mot skarven.
+* **`puzzle`** — vågig skarv som låser i sidled. Limmas.
+* **`screw`** — lägg M3-muttern i sexkantsfickan innan du sätter ihop delarna,
+  skruva sedan från utsidan. Den enda fogen som är gjord för att tas isär igen.
+
+Sitter en fog för hårt eller för löst: justera `clearance_mm` i skrivarprofilen.
+Större värde ger lösare passning.
 
 ## Felsökning
 
@@ -137,6 +154,9 @@ I den här fasen **byggs inte** foggeometrin — förslagen skrivs till
   rätt skrivarprofil används.
 * **Färre delar än planen anger** — modellen har hålrum, så vissa celler i
   rutnätet blir tomma. Det är förväntat.
+* **"Fogen gick inte att bygga - provar ..."** — fogen fick inte plats i
+  materialet, så programmet valde ett enklare alternativ. Delarna är fortfarande
+  hela och användbara. Vill du styra valet själv, använd `--joint`.
 * **Analysen tar tid på stora modeller** — varje kandidatläge kräver ett
   tvärsnitt. Kör med `--no-analysis` för ett snabbt svar, eller `--dry-run`
   för att bara se planen.
