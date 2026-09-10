@@ -69,6 +69,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Skriv analys och motivering för varje snitt på svenska.",
     )
     cut.add_argument(
+        "--joint",
+        choices=["auto", "none", "pins", "dovetail", "puzzle", "screw"],
+        default="auto",
+        help="Fogtyp. 'auto' följer rekommendationen per snitt.",
+    )
+    cut.add_argument(
+        "--no-joints",
+        action="store_true",
+        help="Bygg ingen foggeometri - bara plana snitt.",
+    )
+    cut.add_argument(
         "--no-analysis",
         action="store_true",
         help="Hoppa över analys av snittytor - snabbare, men snitten läggs jämnt fördelade.",
@@ -124,11 +135,32 @@ def _cmd_cut(args: argparse.Namespace) -> int:
         print("\nModellen får plats som den är - inget att kapa.")
         return 0
 
-    result = cut_mesh(info.mesh, plan)
+    build_joints = not args.no_joints and args.joint != "none"
+    result = cut_mesh(
+        info.mesh,
+        plan,
+        joints=build_joints,
+        printer=printer,
+        force_joint=None if args.joint == "auto" else args.joint,
+    )
     print(f"\nKapade i {len(result.parts)} delar.")
+    if result.joints:
+        built = [j for j in result.joints if j.applied]
+        print(f"Byggde {len(built)} av {len(result.joints)} fogar.")
+        for joint in result.joints:
+            status = joint.joint_type if joint.applied else "ingen fog"
+            note = f" (önskad: {joint.requested_type})" if joint.fell_back else ""
+            print(
+                f"  Snitt {joint.cut_index}: del {joint.part_a:02d}-{joint.part_b:02d} "
+                f"-> {status}{note}"
+            )
     print(f"Volymavvikelse: {result.volume_error * 100:.3f} %")
     for warning in result.warnings:
         print(f"VARNING: {warning}")
+
+    problems = result.validate()
+    for index, issues in problems.items():
+        print(f"VARNING: del {index:02d}: {'; '.join(issues)}")
 
     too_big = parts_fit(result, printer)
     if too_big:

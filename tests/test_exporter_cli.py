@@ -166,3 +166,72 @@ def test_cli_no_analysis_skips_the_recommendation(tmp_path, big_box, capsys):
 
     report = json.loads((out_dir / "split_report.json").read_text(encoding="utf-8"))
     assert all(cut["analysis"] is None for cut in report["plan"]["cuts"])
+
+
+def test_report_contains_the_joints(tmp_path, big_box, printer):
+    """Fas 3: rapporten ska visa vilka fogar som byggdes mellan vilka delar."""
+    plan = plan_splits(big_box, printer, auto_orient=False, analyse=True)
+    result = cut_mesh(big_box, plan, joints=True, printer=printer)
+
+    export = exporter.export_parts(result, tmp_path / "ut", printer)
+    report = json.loads(export.report_file.read_text(encoding="utf-8"))
+
+    joints = report["result"]["joints"]
+    assert joints
+    for joint in joints:
+        assert joint["applied"] is True
+        assert joint["fell_back"] is False
+        assert joint["joint_type"] in ("pins", "dovetail", "puzzle", "screw")
+        assert joint["part_a"] < joint["part_b"]
+        assert joint["warnings"] == []
+
+
+def test_cli_forces_a_joint_type(tmp_path, big_box, capsys):
+    model = tmp_path / "modell.stl"
+    mesh_io.save_stl(big_box, model)
+    out_dir = tmp_path / "ut"
+
+    code = main(
+        ["cut", str(model), "--printer", "Bambu P1S", "--out", str(out_dir), "--joint", "pins"]
+    )
+    out = capsys.readouterr().out
+
+    assert code == 0
+    assert "fogar" in out
+    report = json.loads((out_dir / "split_report.json").read_text(encoding="utf-8"))
+    assert {j["joint_type"] for j in report["result"]["joints"]} == {"pins"}
+
+
+def test_cli_can_skip_the_joints(tmp_path, big_box):
+    model = tmp_path / "modell.stl"
+    mesh_io.save_stl(big_box, model)
+    out_dir = tmp_path / "ut"
+
+    assert (
+        main(
+            [
+                "cut",
+                str(model),
+                "--printer",
+                "Bambu P1S",
+                "--out",
+                str(out_dir),
+                "--no-joints",
+            ]
+        )
+        == 0
+    )
+
+    report = json.loads((out_dir / "split_report.json").read_text(encoding="utf-8"))
+    assert report["result"]["joints"] == []
+
+
+def test_exported_parts_with_joints_reload_cleanly(tmp_path, big_box, printer):
+    plan = plan_splits(big_box, printer, auto_orient=False, analyse=True)
+    result = cut_mesh(big_box, plan, joints=True, printer=printer)
+
+    export = exporter.export_parts(result, tmp_path / "ut", printer)
+
+    for path in export.part_files:
+        info = mesh_io.load_mesh(path)
+        assert info.watertight, f"{path.name} är inte hel efter export"

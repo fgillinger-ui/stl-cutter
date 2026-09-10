@@ -3,7 +3,8 @@
 Detta dokument beskriver modulerna och dataklasserna i `stl_cutter`.
 **Kommande faser ska läsa och uppdatera den här filen.**
 
-Status: fas 1 (grundstruktur, plana snitt) och fas 2 (analys och rekommendation) är klara.
+Status: fas 1 (grundstruktur, plana snitt), fas 2 (analys och rekommendation) och
+fas 3 (foggeometri) är klara.
 
 ## Teknikval (fastställt)
 
@@ -24,8 +25,15 @@ stl_cutter/
     analysis.py       # mät snittytan: area, öar, väggtjocklek, rundhet     [fas 2]
     recommender.py    # välj fogtyp utifrån snittytan och monteringsavsikt  [fas 2]
     planner.py        # orientering, kandidatplan, poängsättning
-    cutter.py         # utför plansnitten, kvalitetskontroll
+    cutter.py         # utför plansnitten, parar ihop grannar, bygger fogar
     exporter.py       # skriver part_NN.stl + split_report.json
+    joints/           # foggeometri                                       [fas 3]
+      base.py         #   plan-frame, kontaktyta, booleaner, JointBuilder
+      dovetail.py     #   laxstjärt (trapetsprisma med undersnitt)
+      pins.py         #   styrpinnar (dowels)
+      puzzle.py       #   pusselprofil (sinus eller nyckelhål)
+      screw.py        #   M3-skruv med mutterficka + styrpinnar
+      __init__.py     #   build_joint(): val, kontroll och fallback-kedja
 data/printers.json    # inbyggda profiler
 ```
 
@@ -38,7 +46,11 @@ fil -> mesh_io.load_mesh  -> MeshInfo
          |-> planner.score_candidate()    väljer bästa läge
          |-> recommender.recommend_joint() per valt snitt
        -> SplitPlan (lista av CutInfo)
-    -> cutter.cut_mesh(mesh, plan)        -> CutResult (lista av Part)
+    -> cutter.cut_mesh(mesh, plan, joints=True, printer=...)
+         |-> cutter.find_pairs()          hittar delar som möts vid ett plan
+         |-> joints.build_joint()         bygger fogen, med fallback-kedja
+         |-> joints.validate_parts()      kontrollerar alla delar
+       -> CutResult (lista av Part + JointRecord)
     -> exporter.export_parts(...)         -> STL-filer + split_report.json
 ```
 
@@ -56,6 +68,10 @@ fil -> mesh_io.load_mesh  -> MeshInfo
 | `CutInfo` | `planner` | `index`, `plane`, `analysis`, `score`, `recommendation`, `alternatives` (topp 3), `nominal_position_mm` |
 | `PartBox` | `planner` | `index`, `grid`, `size_mm` — förväntad låda per del, före snitt |
 | `SplitPlan` | `planner` | `cuts`, `part_count`, `part_boxes`, `transform` (4×4), `orientation_name`, `divisions`, `bounds`, `printer_name`, `assembly_intent`; `planes` är en egenskap härledd ur `cuts` |
+| `JointParams` | `joints.base` | Alla fogparametrar med defaults; `from_recommendation()` fyller den från fas 2 |
+| `JointResult` | `joints.base` | `mesh_a`, `mesh_b`, `joint_type`, `requested_type`, `applied`, `warnings`, `attempts`; `fell_back` |
+| `PlaneFrame` | `joints.base` | Lokalt system för ett snitt: `origin`, `u` (lång riktning), `v` (kort riktning, glidriktning), `n` (mot del B) |
+| `JointRecord` | `cutter` | Loggpost per fog: `cut_index`, `part_a`, `part_b`, `joint_type`, `requested_type`, `applied`, `warnings` |
 | `Part` | `cutter` | `index`, `mesh`; härlett: `volume_mm3`, `extents_mm`, `watertight` |
 | `CutResult` | `cutter` | `parts`, `original_volume_mm3`, `plan`, `warnings`; härlett: `volume_error`, `all_watertight` |
 | `ExportResult` | `exporter` | `directory`, `part_files`, `report_file` |
@@ -148,6 +164,63 @@ Efter snittet fylls hål och normaler rättas per del. Delar som inte är watert
 loggas som varning, och volymskillnaden mot originalet jämförs mot
 `cutter.VOLUME_TOLERANCE` (0,5 %).
 
+### Foggeometri (fas 3)
+
+Gemensamt gränssnitt: `build(mesh_a, mesh_b, plane, params) -> (mesh_a_out, mesh_b_out)`.
+Del A ligger under planet och får fogens **hane**, del B över och får **honan**.
+
+**Generell metod** — `JointBuilder.build()`: `keys()` bygger nyckeln som solid i
+det lokala systemet, den adderas till A, och samma nyckel uppförstorad med
+`clearance_mm` per sida subtraheras från B. `manifold3d` används genomgående.
+Nycklarna överlappar 1 mm in i den egna delen (`OVERLAP_MM`) så att booleaner
+aldrig möts exakt kant-i-kant.
+
+**Kontaktytan** — `contact_region()` sektionerar båda delarna 0,05 mm in på var
+sin sida om planet och skär polygonerna mot varandra. Sektioner av
+booleanbearbetade meshar innehåller nästan sammanfallande hörn, så polygonen
+städas med `simplify(0.001)` innan den extruderas — annars blir prismat
+degenererat och `manifold3d` avvisar det. `aligned_frame()` roterar sedan
+systemet så att `u` följer kontaktytans långa riktning.
+
+| Fogtyp | Konstruktion |
+|--------|--------------|
+| `pins` | Cylindrar med fasad topp, placerade på `region.buffer(-(marginal + radie))` så att 3 mm hålls till kanten. Hålet får `clearance` i radie och 0,3 mm extra djup så pinnen bottnar mot luft. |
+| `dovetail` | Trapetsprisma, bredare vid `depth` än vid halsen (8° flare) — låser mot dragkraft. 1–3 st fördelade längs `u`, var och en extruderad längs `v` (glidriktningen) med 0,4 mm fas i båda ändarna. Byggs som konvext hölje av tvärsnitt på flera nivåer, vilket inte kan ge en trasig mesh. Honan öppnas mot sidorna (`region.buffer(2)`) så att laxstjärten går att skjuta in. |
+| `puzzle` | Följer inte den generella metoden. En profil i (u, n)-planet — `sine` eller `keyhole` med undersnitt — extruderas genom hela tjockleken och **ersätter** det plana snittet: `A = (A ∪ B) ∩ prismat`, `B = (A ∪ B) − prismat.buffer(clearance)`. |
+| `screw` | Följer inte heller den generella metoden: material tas bort ur båda delarna. Genomgående Ø3,4 mm-hål och Ø6×3 mm försänkning i A; sexkantsficka (nyckelvidd 5,5 mm) vid snittytan och hål för skruvspetsen i B. Muttern läggs i fickan före montering. Två styrpinnar varvas med skruvarna längs `u`. |
+
+**Begränsningar mot materialet** — `build()` mäter hur långt varje del sträcker
+sig från snittytan (`reach_a`, `reach_b`) innan `keys()` anropas. Laxstjärten
+kapas till halva del B:s djup, pinnar till del B:s djup minus 1 mm, och
+pusselamplituden till en tredjedel av respektive dels djup. En laxstjärt kräver
+minst 6 mm tjocklek.
+
+**Robusthetskedja** — `joints.build_joint()` kontrollerar efter varje boolean att
+resultatet är watertight, har konsekventa normaler och att den sammanlagda
+volymen ligger mellan 50 % och 102 % av utgångsläget. Vid problem provas i tur
+och ordning:
+
+1. samma fog på städade meshar (`process(validate=True)`),
+2. samma fog förskjuten 0,5 mm i planet,
+3. en enklare fogtyp: `dovetail`/`puzzle`/`screw` → `pins` → plant snitt.
+
+Delarna returneras alltid — `build_joint()` kraschar aldrig utan resultat, och
+varje försök loggas i `JointResult.attempts`.
+
+**Styrpinnar som komplement** — när `params.guide_pins > 0` och fogen inte redan
+är `pins`, `screw` eller `puzzle` byggs pinnarna i ett andra pass. (Pusselfogen
+undantas: dess vågiga skarv lämnar ingen plan yta att sätta pinnar i, och
+profilen styr redan delarna i planet.) Kontaktytan räknas då om
+från de färdiga delarna, så pinnarna hamnar automatiskt på den yta som är kvar
+runt huvudfogen. Misslyckas det blir det en varning, inte ett fel.
+
+**Ihopparning** — `cutter.find_pairs()` letar delar vars bounding box möts vid ett
+snittplan (inom 0,05 mm) med minst 1 mm överlapp i planet. Paren tas fram
+**innan** någon fog byggs, eftersom nycklarna ändrar delarnas bounding box.
+
+**Kontroll före export** — `joints.validate_parts()` körs efter fogbygget och
+rapporterar problem per del; `CutResult.validate()` är genvägen.
+
 ## split_report.json
 
 ```json
@@ -176,7 +249,11 @@ loggas som varning, och volymskillnaden mot originalet jämförs mot
     "part_boxes": [ ... ], "bounds_mm": [[...]]
   },
   "result": { "volume_error_percent": 0.0, "all_watertight": true,
-              "warnings": [], "parts": [ { "index": 1, "size_mm": [...],
+              "warnings": [],
+              "joints": [ { "cut_index": 1, "part_a": 1, "part_b": 2,
+                            "joint_type": "dovetail", "requested_type": "dovetail",
+                            "applied": true, "fell_back": false, "warnings": [] } ],
+              "parts": [ { "index": 1, "size_mm": [...],
               "volume_mm3": 0.0, "watertight": true, "file": "part_01.stl" } ] }
 }
 ```
@@ -186,13 +263,10 @@ Vid `--dry-run` är `result` `null`. Med `--no-analysis` är `analysis`, `score`
 
 ## Planerade utökningar
 
-* **Fas 3** — `core/joints/` med `base.py`, `dovetail.py`, `pins.py`, `puzzle.py`,
-  `screw.py`. Gemensamt gränssnitt `build(mesh_a, mesh_b, plane, params)`.
-  Booleaner via `manifold3d`, med fallback-kedja och `validate_parts()` före
-  export. `cutter.py` läser `CutInfo.recommendation` och bygger fogen; CLI får
-  `--joint dovetail` för att tvinga en typ. Parametrarna i
-  `JointRecommendation.params` är avsedda som defaults till `JointParams`.
 * **Fas 4** — `stl_cutter/gui/` (PySide6). GUI:t anropar endast befintligt API:
-  `mesh_io.load_mesh`, `plan_splits`, `cut_mesh`, `export_parts` samt
-  `CutInfo.alternatives` för fogvalsdropdownen.
-* **Fas 5** — `install.sh`, `.desktop`, ikon, `docs/JOINTS.md`, CI-workflow.
+  `mesh_io.load_mesh`, `plan_splits`, `cut_mesh(joints=True, force_joint=...)`,
+  `export_parts` samt `CutInfo.alternatives` för fogvalsdropdownen. Vill GUI:t
+  låta användaren välja fogtyp per snitt räcker det att sätta
+  `CutInfo.recommendation` innan `cut_mesh()` anropas.
+* **Fas 5** — `install.sh`, `.desktop`, ikon, `docs/JOINTS.md` (fogtypernas
+  användningsområden och rekommenderade toleranser), CI-workflow.
