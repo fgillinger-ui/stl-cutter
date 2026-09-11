@@ -590,3 +590,95 @@ def plan_splits(
         printer_name=printer.name,
         assembly_intent=assembly_intent,
     )
+
+
+# --------------------------------------------------------------------------
+# Manuella snitt
+# --------------------------------------------------------------------------
+
+
+def oriented_mesh(mesh: trimesh.Trimesh, plan: SplitPlan) -> trimesh.Trimesh:
+    """Modellen i planens koordinatsystem - det snittlägena är uttryckta i."""
+    out = mesh.copy()
+    out.apply_transform(plan.transform)
+    return out
+
+
+def make_cut(
+    mesh: trimesh.Trimesh,
+    axis: int,
+    position: float,
+    index: int = 1,
+    printer: PrinterProfile | None = None,
+    assembly_intent: AssemblyIntent = "glue",
+    bounds: np.ndarray | None = None,
+) -> CutInfo:
+    """Ett enskilt snitt på en given plats, med analys och fogförslag.
+
+    `mesh` ska redan vara i planens koordinatsystem (se `oriented_mesh`).
+    Används av gränssnittet när användaren själv placerar eller flyttar ett
+    snitt - då finns ingen kandidatsökning, bara den valda positionen.
+    """
+    if bounds is None:
+        bounds = np.asarray(mesh.bounds, dtype=float)
+    plane = _make_plane(np.asarray(bounds, dtype=float), int(axis), float(position))
+    analysis = analyse_section(mesh, plane.origin, plane.normal, axis=int(axis))
+
+    info = CutInfo(index=int(index), plane=plane, analysis=analysis)
+    best, alternatives = recommend_joint(analysis, intent=assembly_intent, printer=printer)
+    info.recommendation = best
+    info.alternatives = alternatives
+    return info
+
+
+def plan_from_cuts(
+    mesh: trimesh.Trimesh,
+    printer: PrinterProfile,
+    cuts: list[CutInfo],
+    transform: np.ndarray | None = None,
+    orientation_name: str = "manuell",
+    assembly_intent: AssemblyIntent = "glue",
+) -> SplitPlan:
+    """Bygg en `SplitPlan` av snitt som användaren själv bestämt.
+
+    Snitten får inte ligga utanför modellen; sådana kastas. Delarnas lådor
+    räknas ut av de faktiska snittlägena, så antalet delar följer av snitten -
+    inte tvärtom som i den automatiska planeringen.
+    """
+    transform = np.eye(4) if transform is None else np.asarray(transform, dtype=float)
+    working = mesh.copy()
+    working.apply_transform(transform)
+    bounds = np.asarray(working.bounds, dtype=float)
+
+    positions: dict[int, list[float]] = {}
+    kept: list[CutInfo] = []
+    for cut in sorted(cuts, key=lambda c: (c.plane.axis, c.plane.position)):
+        axis = cut.plane.axis
+        position = cut.plane.position
+        if not (bounds[0][axis] + 1e-6 < position < bounds[1][axis] - 1e-6):
+            log.warning(
+                "Snittet vid %s = %.1f mm ligger utanför modellen och hoppas över.",
+                AXIS_NAMES[axis],
+                position,
+            )
+            continue
+        positions.setdefault(axis, []).append(position)
+        kept.append(cut)
+
+    for number, cut in enumerate(kept, start=1):
+        cut.index = number
+
+    divisions = tuple(len(positions.get(axis, [])) + 1 for axis in range(3))
+    boxes = _part_boxes(bounds, positions)
+
+    return SplitPlan(
+        cuts=kept,
+        part_count=divisions[0] * divisions[1] * divisions[2],
+        part_boxes=boxes,
+        transform=transform,
+        orientation_name=orientation_name,
+        divisions=divisions,
+        bounds=bounds,
+        printer_name=printer.name,
+        assembly_intent=assembly_intent,
+    )

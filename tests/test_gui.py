@@ -19,7 +19,15 @@ pytest.importorskip("pyqtgraph", reason="pyqtgraph krävs för GUI-testerna")
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from stl_cutter.core import mesh_io  # noqa: E402
-from stl_cutter.gui.app import JOINT_LABELS, MainWindow  # noqa: E402
+from stl_cutter.gui.app import (  # noqa: E402
+    COLUMN_AXIS,
+    COLUMN_INDEX,
+    COLUMN_JOINT,
+    COLUMN_MOTIVATION,
+    COLUMN_POSITION,
+    JOINT_LABELS,
+    MainWindow,
+)
 from stl_cutter.gui.settings import Settings  # noqa: E402
 from stl_cutter.gui.view3d import explode_offsets, part_colors, plane_quad  # noqa: E402
 from stl_cutter.gui.workers import Worker, friendly_error  # noqa: E402
@@ -172,11 +180,16 @@ def test_analysis_fills_the_table(qapp, window, model_file):
     assert window.cut_table.rowCount() == len(window.plan.cuts)
 
     for row, cut in enumerate(window.plan.cuts):
-        assert window.cut_table.item(row, 0).text() == str(cut.index)
-        assert "mm" in window.cut_table.item(row, 1).text()
-        combo = window.cut_table.cellWidget(row, 2)
+        assert window.cut_table.item(row, COLUMN_INDEX).text() == str(cut.index)
+        assert window.cut_table.cellWidget(row, COLUMN_AXIS).currentData() == cut.plane.axis
+        position = window.cut_table.cellWidget(row, COLUMN_POSITION)
+        assert position.value() == pytest.approx(cut.plane.position, abs=0.05)
+        combo = window.cut_table.cellWidget(row, COLUMN_JOINT)
         assert combo.currentData() == cut.recommendation.joint_type
-        assert window.cut_table.item(row, 3).text() == cut.recommendation.motivation
+        assert (
+            window.cut_table.item(row, COLUMN_MOTIVATION).text()
+            == cut.recommendation.motivation
+        )
 
 
 def test_changing_the_joint_type_updates_the_plan(qapp, window, model_file):
@@ -185,11 +198,14 @@ def test_changing_the_joint_type_updates_the_plan(qapp, window, model_file):
     window.start_analysis()
     wait_for_worker(qapp, window)
 
-    combo = window.cut_table.cellWidget(0, 2)
+    combo = window.cut_table.cellWidget(0, COLUMN_JOINT)
     combo.setCurrentIndex(combo.findData("pins"))
 
     assert window.plan.cuts[0].recommendation.joint_type == "pins"
-    assert window.cut_table.item(0, 3).text() == window.plan.cuts[0].recommendation.motivation
+    assert (
+        window.cut_table.item(0, COLUMN_MOTIVATION).text()
+        == window.plan.cuts[0].recommendation.motivation
+    )
     assert JOINT_LABELS["pins"] in window.status_box.toPlainText()
 
 
@@ -199,7 +215,7 @@ def test_every_joint_type_is_selectable(qapp, window, model_file):
     window.start_analysis()
     wait_for_worker(qapp, window)
 
-    combo = window.cut_table.cellWidget(0, 2)
+    combo = window.cut_table.cellWidget(0, COLUMN_JOINT)
     for joint_type in ("none", "puzzle", "dovetail", "pins", "screw"):
         combo.setCurrentIndex(combo.findData(joint_type))
         assert window.plan.cuts[0].recommendation.joint_type == joint_type
@@ -259,7 +275,7 @@ def test_cut_uses_the_manually_chosen_joint(qapp, window, model_file, tmp_path):
     wait_for_worker(qapp, window)
 
     for row in range(window.cut_table.rowCount()):
-        combo = window.cut_table.cellWidget(row, 2)
+        combo = window.cut_table.cellWidget(row, COLUMN_JOINT)
         combo.setCurrentIndex(combo.findData("pins"))
 
     window.start_cut()
@@ -659,7 +675,7 @@ def test_a_picture_of_the_joint_is_shown(qapp, window, model_file):
     assert not window.joint_image.isHidden()
     first = window.joint_image.pixmap().toImage()
 
-    combo = window.cut_table.cellWidget(0, 2)
+    combo = window.cut_table.cellWidget(0, COLUMN_JOINT)
     combo.setCurrentIndex(combo.findData("pins"))
 
     assert window.joint_image.pixmap().toImage() != first, "bilden ska följa fogvalet"
@@ -870,3 +886,224 @@ def test_fit_view_is_harmless_with_an_empty_scene(qapp, window):
     window.view.fit_view()
 
     assert window.view.content_bounds() is None
+
+
+# --------------------------------------------------------------------------
+# Manuell kapning: sätt snitten själv
+# --------------------------------------------------------------------------
+
+
+def _position_widget(window, row):
+    return window.cut_table.cellWidget(row, COLUMN_POSITION)
+
+
+def _axis_widget(window, row):
+    return window.cut_table.cellWidget(row, COLUMN_AXIS)
+
+
+def _move_cut(window, row, position):
+    widget = _position_widget(window, row)
+    widget.setValue(position)
+    window._on_position_settled(row)
+
+
+def test_a_cut_can_be_added_without_running_the_analysis(qapp, window, model_file):
+    """Man ska kunna börja med att placera ett snitt själv."""
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+    assert window.plan is None
+    assert window.add_cut_button.isEnabled()
+
+    window.add_cut()
+
+    assert window.plan is not None
+    assert len(window.plan.cuts) == 1
+    assert window.cut_table.rowCount() == 1
+    assert window.cut_button.isEnabled()
+
+
+def test_a_new_cut_lands_on_the_longest_axis(qapp, window, model_file):
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+
+    window.add_cut()
+
+    # big_box är 600 x 200 x 100 mm - längsta axeln är X.
+    assert window.plan.cuts[0].plane.axis == 0
+
+
+def test_the_position_field_is_limited_to_the_model(qapp, window, model_file):
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+    window.add_cut()
+
+    widget = _position_widget(window, 0)
+
+    assert widget.minimum() == pytest.approx(-300.0, abs=0.5)
+    assert widget.maximum() == pytest.approx(300.0, abs=0.5)
+
+
+def test_moving_a_cut_updates_the_plan_and_the_view(qapp, window, model_file):
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+    window.add_cut()
+
+    _move_cut(window, 0, -180.0)
+
+    assert window.plan.cuts[0].plane.position == pytest.approx(-180.0)
+    assert window.plan.cuts[0].analysis.position_mm == pytest.approx(-180.0)
+    assert len(window.view._plane_items) == 1
+
+
+def test_dragging_the_value_moves_the_plane_without_reanalysing(qapp, window, model_file):
+    """Medan värdet ändras ska vyn följa med direkt - analysen kan vänta."""
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+    window.add_cut()
+    before = window.plan.cuts[0].analysis.position_mm
+
+    _position_widget(window, 0).setValue(-120.0)  # bara valueChanged
+
+    assert window.plan.cuts[0].plane.position == pytest.approx(-120.0)
+    assert window.plan.cuts[0].analysis.position_mm == pytest.approx(before)
+
+
+def test_the_axis_of_a_cut_can_be_changed(qapp, window, model_file):
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+    window.add_cut()
+    assert window.plan.cuts[0].plane.axis == 0
+
+    _axis_widget(window, 0).setCurrentIndex(1)
+
+    assert window.plan.cuts[0].plane.axis == 1
+    assert window.plan.cuts[0].analysis is not None
+
+
+def test_a_cut_can_be_removed(qapp, window, model_file):
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+    window.add_cut()
+    window.add_cut()
+    assert window.cut_table.rowCount() == 2
+
+    window.cut_table.setCurrentCell(0, 0)
+    window.remove_cut()
+
+    assert window.cut_table.rowCount() == 1
+    assert len(window.plan.cuts) == 1
+
+
+def test_removing_without_a_selection_says_so(qapp, window, model_file):
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+
+    window.remove_cut()
+
+    assert "Markera ett snitt" in window.status_box.toPlainText()
+
+
+def test_the_selection_follows_the_cut_when_rows_reorder(qapp, window, model_file):
+    """Snitten sorteras efter läge - markeringen ska inte tappas bort."""
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+    window.add_cut()
+    _move_cut(window, 0, -200.0)
+    window.add_cut()
+    row = window.cut_table.currentRow()
+
+    # Flytta det markerade snittet förbi det andra, så att raderna byter plats.
+    _move_cut(window, row, -250.0)
+
+    positions = [round(c.plane.position) for c in window.plan.cuts]
+    assert positions == sorted(positions), "snitten ska ligga i ordning"
+    selected = window.plan.cuts[window.cut_table.currentRow()]
+    assert selected.plane.position == pytest.approx(-250.0), (
+        "markeringen ska följa med det snitt som flyttades"
+    )
+    assert window.cut_table.currentRow() == 0, "det flyttade snittet ligger nu först"
+
+
+def test_the_summary_warns_when_the_parts_do_not_fit(qapp, window, model_file):
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+
+    window.add_cut()  # ett snitt räcker inte för en 600 mm modell
+
+    text = window.plan_summary.text()
+    assert "2 delar" in text
+    assert "får inte plats" in text
+
+
+def test_the_summary_is_happy_when_everything_fits(qapp, window, model_file):
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+    for position in (-200.0, 0.0, 200.0):
+        window.add_cut()
+        _move_cut(window, window.cut_table.currentRow(), position)
+
+    text = window.plan_summary.text()
+
+    assert "4 delar" in text
+    assert "får inte plats" not in text
+
+
+def test_manual_cuts_are_what_gets_cut(qapp, window, model_file, tmp_path):
+    """Hela poängen: mina snitt, min fogtyp, mina delar."""
+    window.settings.last_output_dir = str(tmp_path / "ut")
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+    for position in (-200.0, 0.0, 200.0):
+        window.add_cut()
+        _move_cut(window, window.cut_table.currentRow(), position)
+    for row in range(window.cut_table.rowCount()):
+        combo = window.cut_table.cellWidget(row, COLUMN_JOINT)
+        combo.setCurrentIndex(combo.findData("pins"))
+
+    window.start_cut()
+    wait_for_worker(qapp, window)
+
+    assert len(window.result.parts) == 4
+    assert {j.requested_type for j in window.result.joints} == {"pins"}
+    assert window.result.all_watertight
+    assert sorted(p.name for p in (tmp_path / "ut").glob("part_*.stl")) == [
+        "part_01.stl",
+        "part_02.stl",
+        "part_03.stl",
+        "part_04.stl",
+    ]
+
+
+def test_the_analysis_replaces_manual_cuts(qapp, window, model_file):
+    """"Räkna ut åt mig" ska ge tillbaka programmets förslag."""
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+    window.add_cut()
+    _move_cut(window, 0, -280.0)
+    assert len(window.plan.cuts) == 1
+
+    window.start_analysis()
+    wait_for_worker(qapp, window)
+
+    assert len(window.plan.cuts) == 2  # 600 mm mot 246 mm användbart
+    assert window.plan.orientation_name != "manuell"
+
+
+def test_the_view_shows_the_model_in_the_plans_frame(qapp, window, tmp_path):
+    """Snittplanen ritas i planens koordinatsystem - modellen måste följa med."""
+    import numpy as np
+    import trimesh
+
+    rod = trimesh.creation.box(extents=[500.0, 60.0, 60.0])
+    rod.apply_transform(trimesh.transformations.rotation_matrix(np.radians(45), [0, 0, 1]))
+    path = tmp_path / "sned.stl"
+    mesh_io.save_stl(rod, path)
+
+    window.load_model(path)
+    wait_for_worker(qapp, window)
+    window.start_analysis()
+    wait_for_worker(qapp, window)
+
+    assert not np.allclose(window.plan.transform, np.eye(4)), "modellen ska ha roterats"
+    shown = window.view.content_bounds()
+    assert np.allclose(shown, window.plan.bounds, atol=1.0)

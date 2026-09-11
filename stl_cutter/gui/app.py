@@ -11,6 +11,7 @@ import logging
 from functools import partial
 from pathlib import Path
 
+import numpy as np
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
@@ -41,7 +42,7 @@ from PySide6.QtWidgets import (
 
 from ..core import exporter, mesh_io
 from ..core.cutter import cut_mesh, parts_fit
-from ..core.planner import plan_splits
+from ..core.planner import AXIS_NAMES, make_cut, oriented_mesh, plan_from_cuts, plan_splits
 from ..core.printers import PrinterProfile, get_printer, load_printers, save_profile
 from ..core.recommender import JOINT_TYPES, build_recommendation
 from . import joint_images
@@ -68,6 +69,9 @@ MAX_EXPLODE_MM = 200
 #: Bredd på bilden bredvid motiveringen.
 JOINT_THUMBNAIL_WIDTH = 180
 
+#: Kolumner i snittabellen.
+COLUMN_INDEX, COLUMN_AXIS, COLUMN_POSITION, COLUMN_JOINT, COLUMN_MOTIVATION = range(5)
+
 
 class MainWindow(QMainWindow):
     def __init__(self, settings: Settings | None = None):
@@ -77,6 +81,8 @@ class MainWindow(QMainWindow):
         self.plan = None
         self.result = None
         self.worker: Worker | None = None
+        #: Sant medan tabellen ritas om, så att signaler inte studsar tillbaka.
+        self._filling = False
 
         self.setWindowTitle(WINDOW_TITLE)
         self.setAcceptDrops(True)
@@ -152,6 +158,8 @@ class MainWindow(QMainWindow):
         self.bed_y = self._spin(10, 2000, "")
         self.bed_z = self._spin(10, 2000, "")
         self.margin = self._spin(0, 100, " mm")
+        for spin in (self.bed_x, self.bed_y, self.bed_z, self.margin):
+            spin.valueChanged.connect(self._on_printer_fields_changed)
 
         bed_row = QHBoxLayout()
         bed_row.addWidget(QLabel("Byggvolym (mm):"))
@@ -203,15 +211,44 @@ class MainWindow(QMainWindow):
         self.analyse_button.clicked.connect(self.start_analysis)
         layout.addWidget(self.analyse_button)
 
-        self.cut_table = QTableWidget(0, 4)
-        self.cut_table.setHorizontalHeaderLabels(["Snitt", "Position", "Fogtyp", "Motivering"])
+        self.cut_table = QTableWidget(0, 5)
+        self.cut_table.setHorizontalHeaderLabels(
+            ["Snitt", "Axel", "Position", "Fogtyp", "Motivering"]
+        )
         self.cut_table.verticalHeader().setVisible(False)
-        self.cut_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
+        self.cut_table.horizontalHeader().setSectionResizeMode(
+            COLUMN_MOTIVATION, QHeaderView.Stretch
+        )
         self.cut_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.cut_table.setMinimumHeight(70)
         self.cut_table.setMaximumHeight(90)
         self.cut_table.currentCellChanged.connect(self._on_row_selected)
         layout.addWidget(self.cut_table)
+
+        # Manuell redigering: lägg till, ta bort och flytta snitt själv.
+        buttons = QHBoxLayout()
+        self.add_cut_button = QPushButton("Lägg till snitt")
+        self.add_cut_button.setEnabled(False)
+        self.add_cut_button.clicked.connect(self.add_cut)
+        buttons.addWidget(self.add_cut_button)
+
+        self.remove_cut_button = QPushButton("Ta bort snitt")
+        self.remove_cut_button.setEnabled(False)
+        self.remove_cut_button.clicked.connect(self.remove_cut)
+        buttons.addWidget(self.remove_cut_button)
+
+        self.reset_cuts_button = QPushButton("Räkna ut åt mig")
+        self.reset_cuts_button.setEnabled(False)
+        self.reset_cuts_button.setToolTip(
+            "Kasta de manuella snitten och låt programmet räkna ut dem igen"
+        )
+        self.reset_cuts_button.clicked.connect(self.start_analysis)
+        buttons.addWidget(self.reset_cuts_button)
+        layout.addLayout(buttons)
+
+        self.plan_summary = QLabel("")
+        self.plan_summary.setWordWrap(True)
+        layout.addWidget(self.plan_summary)
 
         # Motiveringen får inte plats i kolumnen - visa hela för markerad rad,
         # med en bild som visar vad fogtypen faktiskt är.
@@ -356,6 +393,10 @@ class MainWindow(QMainWindow):
         if self.settings.last_output_dir:
             self.output_label.setText(self.settings.last_output_dir)
 
+    def _on_printer_fields_changed(self, *_args) -> None:
+        self._update_summary()
+        self.on_bed_toggled()
+
     def on_printer_changed(self, name: str) -> None:
         if not name:
             return
@@ -492,6 +533,10 @@ class MainWindow(QMainWindow):
         self.cut_table.setRowCount(0)
         self.cut_button.setEnabled(False)
         self.analyse_button.setEnabled(True)
+        self.add_cut_button.setEnabled(True)
+        self.remove_cut_button.setEnabled(True)
+        self.reset_cuts_button.setEnabled(True)
+        self.plan_summary.setText("")
 
         x, y, z = info.extents_mm
         state = (
@@ -574,38 +619,239 @@ class MainWindow(QMainWindow):
         )
         if not plan.needs_cutting:
             self.status("Modellen får plats som den är - ingen kapning behövs.")
+        self.reset_cuts_button.setEnabled(True)
         self._fill_table(plan)
-        self.view.show_model(self.mesh_info.mesh)
-        self.view.show_planes(plan.planes, plan.bounds)
-        self.on_bed_toggled()
+        # Visa modellen i planens koordinatsystem - annars stämmer inte
+        # snittplanen med modellen när den roterats automatiskt.
+        self._refresh_planes()
 
     def _fill_table(self, plan) -> None:
-        self.cut_table.setRowCount(len(plan.cuts))
-        for row, cut in enumerate(plan.cuts):
-            axis = "XYZ"[cut.plane.axis]
-            self.cut_table.setItem(row, 0, QTableWidgetItem(str(cut.index)))
-            self.cut_table.setItem(
-                row, 1, QTableWidgetItem(f"{axis} = {cut.plane.position:.1f} mm")
-            )
+        """Rita om tabellen från planen. Alla rader är redigerbara."""
+        self._filling = True
+        try:
+            self.cut_table.setRowCount(len(plan.cuts))
+            for row, cut in enumerate(plan.cuts):
+                self._fill_row(row, cut)
+        finally:
+            self._filling = False
 
-            combo = QComboBox()
-            for joint_type in JOINT_TYPES:
-                combo.addItem(JOINT_LABELS[joint_type], joint_type)
-            current = cut.recommendation.joint_type if cut.recommendation else "none"
-            combo.setCurrentIndex(max(combo.findData(current), 0))
-            combo.currentIndexChanged.connect(partial(self._on_joint_changed, row))
-            self.cut_table.setCellWidget(row, 2, combo)
-
-            motivation = cut.recommendation.motivation if cut.recommendation else ""
-            item = QTableWidgetItem(motivation)
-            item.setToolTip(motivation)
-            self.cut_table.setItem(row, 3, item)
         self.cut_table.resizeColumnsToContents()
-        self.cut_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
+        self.cut_table.horizontalHeader().setSectionResizeMode(
+            COLUMN_MOTIVATION, QHeaderView.Stretch
+        )
         self._fit_table_height()
+        self._update_summary()
         if plan.cuts:
             self.cut_table.setCurrentCell(0, 0)
             self._show_motivation(0)
+        else:
+            self.motivation_label.setText(
+                "Inga snitt. Klicka <b>Lägg till snitt</b> för att placera ett själv."
+            )
+            self.joint_image.setVisible(False)
+
+    def _fill_row(self, row: int, cut) -> None:
+        index_item = QTableWidgetItem(str(cut.index))
+        index_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+        self.cut_table.setItem(row, COLUMN_INDEX, index_item)
+
+        axis_combo = QComboBox()
+        for axis, name in enumerate(AXIS_NAMES):
+            axis_combo.addItem(name, axis)
+        axis_combo.setCurrentIndex(cut.plane.axis)
+        axis_combo.setToolTip("Vilket håll snittet går i")
+        axis_combo.currentIndexChanged.connect(partial(self._on_axis_changed, row))
+        self.cut_table.setCellWidget(row, COLUMN_AXIS, axis_combo)
+
+        low, high = self._axis_range(cut.plane.axis)
+        position = QDoubleSpinBox()
+        position.setRange(low, high)
+        position.setDecimals(1)
+        position.setSingleStep(1.0)
+        position.setSuffix(" mm")
+        position.setValue(cut.plane.position)
+        position.setToolTip(f"Var snittet ligger ({low:.0f} till {high:.0f} mm)")
+        position.valueChanged.connect(partial(self._on_position_moved, row))
+        position.editingFinished.connect(partial(self._on_position_settled, row))
+        self.cut_table.setCellWidget(row, COLUMN_POSITION, position)
+
+        joint_combo = QComboBox()
+        for joint_type in JOINT_TYPES:
+            joint_combo.addItem(JOINT_LABELS[joint_type], joint_type)
+        current = cut.recommendation.joint_type if cut.recommendation else "none"
+        joint_combo.setCurrentIndex(max(joint_combo.findData(current), 0))
+        joint_combo.currentIndexChanged.connect(partial(self._on_joint_changed, row))
+        self.cut_table.setCellWidget(row, COLUMN_JOINT, joint_combo)
+
+        motivation = cut.recommendation.motivation if cut.recommendation else ""
+        item = QTableWidgetItem(motivation)
+        item.setToolTip(motivation)
+        self.cut_table.setItem(row, COLUMN_MOTIVATION, item)
+
+    # -- manuell redigering ------------------------------------------------
+
+    def _axis_range(self, axis: int) -> tuple[float, float]:
+        """Var ett snitt får ligga längs en axel: innanför modellen."""
+        if self.plan is None:
+            return (-1000.0, 1000.0)
+        bounds = self.plan.bounds
+        return (float(bounds[0][axis]) + 0.1, float(bounds[1][axis]) - 0.1)
+
+    def _ensure_plan(self) -> bool:
+        """Skapa en tom manuell plan om användaren börjar med att lägga till snitt."""
+        if self.plan is not None:
+            return True
+        if self.mesh_info is None:
+            return False
+        self.plan = plan_from_cuts(
+            self.mesh_info.mesh,
+            self.current_printer(),
+            [],
+            assembly_intent=self.current_intent(),
+        )
+        self.view.show_model(oriented_mesh(self.mesh_info.mesh, self.plan))
+        return True
+
+    def _rebuild_plan(self, cuts, select=None) -> None:
+        """Bygg om planen av de aktuella snitten och rita om allt.
+
+        Snitten sorteras efter läge, så raderna kan byta plats när ett snitt
+        flyttas förbi ett annat. `select` är snittet markeringen ska följa, så
+        att användaren inte tappar bort det hen just redigerade.
+        """
+        printer = self.current_printer()
+        plan = self.plan
+        self.plan = plan_from_cuts(
+            self.mesh_info.mesh,
+            printer,
+            cuts,
+            transform=plan.transform,
+            orientation_name=plan.orientation_name,
+            assembly_intent=self.current_intent(),
+        )
+        self.result = None
+        self.cut_button.setEnabled(bool(self.plan.cuts))
+        self._fill_table(self.plan)
+        self._refresh_planes()
+
+        if select is not None:
+            for row, cut in enumerate(self.plan.cuts):
+                if cut is select:
+                    self.cut_table.setCurrentCell(row, COLUMN_POSITION)
+                    self._show_motivation(row)
+                    break
+
+    def _refresh_planes(self) -> None:
+        if self.plan is None or self.mesh_info is None:
+            return
+        self.view.show_model(oriented_mesh(self.mesh_info.mesh, self.plan))
+        self.view.show_planes(self.plan.planes, self.plan.bounds)
+        self.on_bed_toggled()
+
+    def _analysed_cut(self, axis: int, position: float, index: int):
+        return make_cut(
+            oriented_mesh(self.mesh_info.mesh, self.plan),
+            axis,
+            position,
+            index=index,
+            printer=self.current_printer(),
+            assembly_intent=self.current_intent(),
+            bounds=self.plan.bounds,
+        )
+
+    def add_cut(self) -> None:
+        """Lägg ett nytt snitt mitt på modellens längsta axel."""
+        if not self._ensure_plan():
+            return
+        extents = self.plan.bounds[1] - self.plan.bounds[0]
+        axis = int(np.argmax(extents))
+        low, high = self._axis_range(axis)
+        position = (low + high) / 2.0
+
+        # Ligger redan ett snitt där, lägg det nya en bit vid sidan om.
+        taken = [c.plane.position for c in self.plan.cuts if c.plane.axis == axis]
+        while any(abs(position - other) < 5.0 for other in taken) and position < high - 5.0:
+            position += 10.0
+
+        cut = self._analysed_cut(axis, position, len(self.plan.cuts) + 1)
+        self._rebuild_plan([*self.plan.cuts, cut], select=cut)
+        self.status(
+            f"Lade till ett snitt vid {AXIS_NAMES[axis]} = {position:.1f} mm. "
+            "Flytta det i tabellen eller dra i värdet."
+        )
+
+    def remove_cut(self) -> None:
+        row = self.cut_table.currentRow()
+        if self.plan is None or not (0 <= row < len(self.plan.cuts)):
+            self.status("Markera ett snitt i tabellen först.", error=True)
+            return
+        removed = self.plan.cuts[row]
+        remaining = [c for i, c in enumerate(self.plan.cuts) if i != row]
+        self._rebuild_plan(remaining)
+        self.status(
+            f"Tog bort snittet vid {AXIS_NAMES[removed.plane.axis]} = "
+            f"{removed.plane.position:.1f} mm."
+        )
+
+    def _on_axis_changed(self, row: int, _index: int) -> None:
+        if self._filling or self.plan is None or not (0 <= row < len(self.plan.cuts)):
+            return
+        axis = self.cut_table.cellWidget(row, COLUMN_AXIS).currentData()
+        low, high = self._axis_range(axis)
+        cuts = list(self.plan.cuts)
+        cuts[row] = self._analysed_cut(axis, (low + high) / 2.0, cuts[row].index)
+        self._rebuild_plan(cuts, select=cuts[row])
+
+    def _on_position_moved(self, row: int, value: float) -> None:
+        """Medan värdet ändras: flytta planet i vyn, men analysera inte om."""
+        if self._filling or self.plan is None or not (0 <= row < len(self.plan.cuts)):
+            return
+        cut = self.plan.cuts[row]
+        origin = list(cut.plane.origin)
+        origin[cut.plane.axis] = float(value)
+        cut.plane = type(cut.plane)(
+            origin=tuple(origin), normal=cut.plane.normal, axis=cut.plane.axis
+        )
+        self.view.show_planes(self.plan.planes, self.plan.bounds)
+        self._update_summary()
+
+    def _on_position_settled(self, row: int) -> None:
+        """När värdet är klart: analysera om snittet på sin nya plats."""
+        if self._filling or self.plan is None or not (0 <= row < len(self.plan.cuts)):
+            return
+        widget = self.cut_table.cellWidget(row, COLUMN_POSITION)
+        cut = self.plan.cuts[row]
+        if abs(widget.value() - cut.plane.position) < 1e-9 and cut.analysis is not None:
+            if abs(cut.analysis.position_mm - widget.value()) < 1e-6:
+                return
+        cuts = list(self.plan.cuts)
+        cuts[row] = self._analysed_cut(cut.plane.axis, widget.value(), cut.index)
+        self._rebuild_plan(cuts, select=cuts[row])
+
+    def _update_summary(self) -> None:
+        """Visa hur många delar planen ger och om de får plats."""
+        if self.plan is None:
+            self.plan_summary.setText("")
+            return
+        printer = self.current_printer()
+        boxes = self.plan.part_boxes
+        if not boxes:
+            self.plan_summary.setText("")
+            return
+        biggest = max(boxes, key=lambda b: max(b.size_mm))
+        x, y, z = biggest.size_mm
+        too_big = [b.index for b in boxes if not printer.fits(sorted(b.size_mm))]
+        text = (
+            f"{self.plan.part_count} delar, störst {x:.0f} × {y:.0f} × {z:.0f} mm "
+            f"(byggvolym {printer.usable[0]:.0f} × {printer.usable[1]:.0f} × "
+            f"{printer.usable[2]:.0f} mm)"
+        )
+        if too_big:
+            text += f" — <b>delarna {too_big} får inte plats</b>"
+            self.plan_summary.setStyleSheet("color: #a33;")
+        else:
+            self.plan_summary.setStyleSheet("color: #363;")
+        self.plan_summary.setText(text)
 
     def _fit_table_height(self) -> None:
         """Låt tabellen ta precis den plats den behöver - resten hör till knapparna."""
@@ -655,10 +901,10 @@ class MainWindow(QMainWindow):
 
     def _on_joint_changed(self, row: int, _index: int) -> None:
         """Användaren valde en annan fogtyp för ett snitt."""
-        if self.plan is None or row >= len(self.plan.cuts):
+        if self._filling or self.plan is None or row >= len(self.plan.cuts):
             return
         cut = self.plan.cuts[row]
-        combo = self.cut_table.cellWidget(row, 2)
+        combo = self.cut_table.cellWidget(row, COLUMN_JOINT)
         joint_type = combo.currentData()
         if cut.analysis is None:
             return
@@ -672,7 +918,7 @@ class MainWindow(QMainWindow):
         cut.recommendation = recommendation
         item = QTableWidgetItem(recommendation.motivation)
         item.setToolTip(recommendation.motivation)
-        self.cut_table.setItem(row, 3, item)
+        self.cut_table.setItem(row, COLUMN_MOTIVATION, item)
         self._show_motivation(row)
         self.status(
             f"Snitt {cut.index}: fogtyp ändrad till {JOINT_LABELS[joint_type]}."
