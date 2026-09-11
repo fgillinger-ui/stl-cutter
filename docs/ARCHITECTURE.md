@@ -355,9 +355,31 @@ Vid `--dry-run` är `result` `null`. Med `--no-analysis` är `analysis`, `score`
 **Arbetsflöde** — vänsterpanelen läses uppifrån och ner: 1. Modell (öppna eller
 dra-och-släpp, visar mått, volym och om meshen är hel), 2. Skrivare (profil +
 redigerbar byggvolym och marginal, "Spara som ny profil"), 3. Montering (limmas
-/ tas isär + tolerans), 4. Förslag ("Analysera" fyller en tabell med snitt,
-position, fogtyp i en dropdown och motivering), 5. Kapa och exportera (målmapp +
-"Kapa modellen"). Högerpanelen är 3D-vyn.
+/ tas isär + tolerans), 4. Förslag (snittabellen, se nedan), 5. Kapa och
+exportera (målmapp + "Kapa modellen"). Högerpanelen är 3D-vyn.
+
+**Manuell kapning** — snittabellen är redigerbar: axel, position och fogtyp per
+rad, plus knappar för att lägga till och ta bort snitt. "Analysera" är alltså
+ett *förslag*, inte ett tvång, och behövs inte alls om användaren vill placera
+allt själv.
+
+* `planner.make_cut()` analyserar ett enskilt snitt på en given plats - ett
+  tvärsnitt, ingen kandidatsökning, snabbt nog för att köras medan användaren
+  skriver.
+* `planner.plan_from_cuts()` bygger en `SplitPlan` av givna snitt. Antalet
+  delar följer av snitten i stället för tvärtom, snitten sorteras och
+  numreras om, och snitt utanför modellen kastas.
+* `planner.oriented_mesh()` ger modellen i planens koordinatsystem. 3D-vyn
+  visar den i stället för originalet - snittlägena är uttryckta där, och utan
+  det stämde inte planen med modellen när den roterats automatiskt.
+* Medan ett positionsvärde ändras (`valueChanged`) flyttas bara planet i vyn;
+  analysen körs när värdet är klart (`editingFinished`). Det gör dragningen
+  responsiv utan att kosta ett tvärsnitt per steg.
+* Eftersom snitten sorteras efter läge kan raderna byta plats när ett snitt
+  flyttas förbi ett annat. `_rebuild_plan(select=...)` låter markeringen följa
+  med snittet, inte radnumret.
+* En sammanfattningsrad visar antal delar och största delens mått, och varnar i
+  rött om någon del inte får plats - innan man kapar.
 
 **Trådar** — `gui.workers.Worker` är en `QThread` som kör en funktion vilken tar
 emot ett `progress`-argument. Kärnan anropar callbacken; trycker användaren på

@@ -78,9 +78,26 @@ och en 3D-vy till höger.
    Valet styr vilka fogtyper som föreslås. Toleransen är spelet i fogen; större
    värde ger lösare passning.
 4. **Förslag** — klicka *Analysera*. Du får en tabell med ett snitt per rad:
-   var det ligger, vilken fogtyp programmet föreslår och varför. Håll dig till
-   förslaget eller välj en annan fogtyp i rullgardinsmenyn. Markera en rad för
-   att läsa hela motiveringen och se de näst bästa alternativen.
+   var det ligger, vilken fogtyp programmet föreslår och varför. Markera en rad
+   för att läsa hela motiveringen och se de näst bästa alternativen.
+
+   **Du bestämmer själv.** Varje rad går att ändra:
+
+   * **Axel** — vilket håll snittet går i (X, Y eller Z)
+   * **Position** — var snittet ligger, i millimeter. Snittplanet i 3D-vyn
+     följer med medan du ändrar värdet.
+   * **Fogtyp** — välj fritt, oavsett vad programmet föreslog
+
+   Knapparna under tabellen: *Lägg till snitt* placerar ett nytt snitt mitt på
+   modellens längsta sida, *Ta bort snitt* tar bort det markerade, och
+   *Räkna ut åt mig* kastar dina snitt och tar tillbaka programmets förslag.
+
+   Du behöver inte börja med *Analysera* — klicka *Lägg till snitt* direkt så
+   placerar du alla snitt själv från början.
+
+   Raden under knapparna visar hela tiden hur många delar planen ger, hur stor
+   den största blir, och varnar i rött om någon del inte får plats på
+   byggplattan.
 5. **Kapa och exportera** — välj en målmapp och klicka *Kapa modellen*.
 
 I 3D-vyn ser du modellen, snittplanen som orange plan, och efter kapningen
