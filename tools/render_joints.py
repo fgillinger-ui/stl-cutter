@@ -71,6 +71,20 @@ CASES = {
         "subtitle": "Tappar på ena delen, hål i den andra - tryck ihop och limma",
         "flip": True,
     },
+    "dovetail-stop": {
+        "joint": "dovetail",
+        "extents": [150.0, 120.0, 44.0],
+        "params": {
+            "count": 2,
+            "width_mm": 26.0,
+            "depth_mm": 20.0,
+            "angle_deg": 8.0,
+            "stop_mm": 12.0,
+        },
+        "title": "Laxstjärt med stoppkant",
+        "subtitle": "Spåret är stängt i botten - delen glider in och tar emot mot material",
+        "flip": True,
+    },
     "screw": {
         # Liten kropp: en M3-skruv i en 150 mm-låda blir bara en prick. Delarna
         # visas nästan hopsatta, så att hela skruvens väg syns i ett svep:
@@ -213,13 +227,14 @@ def half(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
 
 
 def main() -> int:
-    for joint_type, case in CASES.items():
+    for name, case in CASES.items():
+        joint_type = case.get("joint", name)
         below, above = split_box(case["extents"])
         result = build_joint(
             below, above, PLANE, JointParams(joint_type=joint_type, **case["params"])
         )
         if joint_type != "none" and not result.applied:
-            print(f"VARNING: {joint_type} gick inte att bygga: {result.attempts}")
+            print(f"VARNING: {name} gick inte att bygga: {result.attempts}")
 
         mesh_a, mesh_b = result.mesh_a.copy(), result.mesh_b.copy()
         if case.get("section"):
@@ -234,7 +249,7 @@ def main() -> int:
         drawing = [(mesh_a, COLOR_A), (mesh_b, COLOR_B)]
         root = Path(__file__).resolve().parents[1]
         for suffix, captions in (("", True), ("-plain", False)):
-            path = OUT_DIR / f"{joint_type}{suffix}.svg"
+            path = OUT_DIR / f"{name}{suffix}.svg"
             render(drawing, case["title"], case["subtitle"], path, captions=captions)
             print(f"skrev {path.relative_to(root)}")
     return 0

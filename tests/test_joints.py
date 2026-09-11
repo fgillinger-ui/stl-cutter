@@ -549,3 +549,96 @@ def test_a_failed_joint_says_why():
     assert "tunt" in reason
     # Samma orsak ska inte upprepas en gång per försök.
     assert reason.count("för tunt") == 1
+
+
+# --------------------------------------------------------------------------
+# Stoppkant i laxstjärtens botten
+# --------------------------------------------------------------------------
+
+
+def _key_of(result, plane_x=0.5):
+    """Den del av hanen som sticker in i den andra delen."""
+    return trimesh.intersections.slice_mesh_plane(
+        result.mesh_a, [1, 0, 0], [plane_x, 0, 0], cap=True, engine="manifold"
+    )
+
+
+def test_a_dovetail_runs_all_the_way_through_by_default():
+    below, above = split([150.0, 120.0, 40.0])
+    params = JointParams(joint_type="dovetail", count=1, width_mm=25.0, depth_mm=15.0)
+
+    result = build_joint(below, above, PLANE, params)
+    key = _key_of(result)
+
+    # Glidriktningen är kontaktytans korta sida: 40 mm.
+    assert float(key.bounds[1][2] - key.bounds[0][2]) == pytest.approx(40.0, abs=0.2)
+
+
+def test_a_stop_closes_the_bottom_of_the_slot():
+    """Delen ska glida in och ta emot mot material, inte bara mot friktion."""
+    below, above = split([150.0, 120.0, 40.0])
+    params = JointParams(
+        joint_type="dovetail", count=1, width_mm=25.0, depth_mm=15.0, stop_mm=8.0
+    )
+
+    result = build_joint(below, above, PLANE, params)
+
+    key = _key_of(result)
+    assert float(key.bounds[1][2] - key.bounds[0][2]) == pytest.approx(32.0, abs=0.3), (
+        "laxstjärten ska vara kortad lika mycket som stoppkanten är hög"
+    )
+
+    # Honan ska ha material kvar i botten av spåret.
+    slot = trimesh.boolean.difference([above, result.mesh_b], engine="manifold")
+    remaining = float(slot.bounds[0][2] - above.bounds[0][2])
+    assert remaining == pytest.approx(8.0, abs=0.3), "stoppkanten saknas i honan"
+
+
+def test_the_stop_does_not_change_the_fit():
+    below, above = split([150.0, 120.0, 40.0])
+    params = JointParams(
+        joint_type="dovetail",
+        count=1,
+        width_mm=25.0,
+        depth_mm=15.0,
+        stop_mm=8.0,
+        clearance_mm=0.15,
+    )
+
+    result = build_joint(below, above, PLANE, params)
+    mesh_a, mesh_b = reassemble(result.mesh_a, result.mesh_b)
+
+    assert overlap_volume(mesh_a, mesh_b) < MAX_OVERLAP_MM3
+    assert abs(key_gap(mesh_a, mesh_b) - 0.15) <= GAP_TOLERANCE_MM
+    assert result.mesh_a.is_watertight and result.mesh_b.is_watertight
+
+
+def test_an_absurd_stop_is_clamped_not_obeyed():
+    """En stoppkant som tar hela spåret skulle göra fogen omöjlig att montera."""
+    below, above = split([150.0, 120.0, 40.0])
+    params = JointParams(
+        joint_type="dovetail", count=1, width_mm=25.0, depth_mm=15.0, stop_mm=200.0
+    )
+
+    result = build_joint(below, above, PLANE, params)
+
+    assert result.applied
+    key = _key_of(result)
+    slide = float(key.bounds[1][2] - key.bounds[0][2])
+    assert slide >= 0.6 * 40.0, "det måste gå att skjuta in laxstjärten"
+
+
+def test_the_stop_reaches_the_geometry_from_the_recommendation():
+    """Vägen från GUI:t: stop_mm ligger i rekommendationens parametrar."""
+    from stl_cutter.core.recommender import JointRecommendation
+
+    recommendation = JointRecommendation(
+        "dovetail",
+        {"count": 1, "width_mm": 25.0, "depth_mm": 15.0, "stop_mm": 7.0},
+        "",
+        0.9,
+    )
+
+    params = JointParams.from_recommendation(recommendation, clearance_mm=0.15)
+
+    assert params.stop_mm == 7.0

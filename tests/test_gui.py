@@ -1423,3 +1423,121 @@ def test_a_thin_flange_does_not_block_the_joint_in_the_gui(qapp, window, tmp_pat
 
     built = [j for j in window.result.joints if j.applied]
     assert built, "den tjocka delen ska få en fog trots den tunna fliken"
+
+
+# --------------------------------------------------------------------------
+# Exakt lutning och stoppkant
+# --------------------------------------------------------------------------
+
+
+def test_the_tilt_can_be_set_exactly(qapp, window, model_file):
+    """Shift+dra är grovt - ibland vill man skriva in gradtalet."""
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+    window.add_cut()
+    assert window.tilt_spin.isEnabled()
+    assert window.tilt_spin.value() == pytest.approx(0.0)
+
+    window.tilt_spin.setValue(25.0)
+
+    cut = window.plan.cuts[0]
+    assert cut.plane.tilt_deg == pytest.approx(25.0, abs=0.05)
+    assert not cut.plane.is_axis_aligned
+    assert cut.analysis is not None
+
+
+def test_the_tilt_can_be_taken_back_to_zero(qapp, window, model_file):
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+    window.add_cut()
+    window.tilt_spin.setValue(25.0)
+
+    window.tilt_spin.setValue(0.0)
+
+    assert window.plan.cuts[0].plane.is_axis_aligned
+
+
+def test_the_tilt_axis_choices_exclude_the_cut_axis(qapp, window, model_file):
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+    window.add_cut()  # hamnar på X
+
+    axes = [
+        window.tilt_axis_combo.itemData(i)
+        for i in range(window.tilt_axis_combo.count())
+    ]
+
+    assert axes == [1, 2], "man lutar kring de andra två axlarna"
+
+
+def test_the_tilt_field_follows_a_dragged_plane(qapp, window, model_file):
+    from PySide6.QtCore import Qt
+
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+    window.add_cut()
+    x, y = _centre(window.view)
+
+    _plane_drag(window.view, [(x, y), (x + 60, y + 30)], modifier=Qt.ShiftModifier)
+
+    assert window.tilt_spin.value() == pytest.approx(
+        window.plan.cuts[0].plane.tilt_deg, abs=0.05
+    )
+
+
+def test_the_stop_is_only_offered_for_dovetails(qapp, window, model_file):
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+    window.add_cut()
+    combo = window.cut_table.cellWidget(0, COLUMN_JOINT)
+
+    combo.setCurrentIndex(combo.findData("pins"))
+    assert not window.stop_check.isEnabled()
+
+    combo.setCurrentIndex(combo.findData("dovetail"))
+    assert window.stop_check.isEnabled()
+
+
+def test_turning_the_stop_on_reaches_the_plan(qapp, window, model_file):
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+    window.add_cut()
+    combo = window.cut_table.cellWidget(0, COLUMN_JOINT)
+    combo.setCurrentIndex(combo.findData("dovetail"))
+
+    window.stop_check.setChecked(True)
+
+    assert window.plan.cuts[0].recommendation.params["stop_mm"] > 0
+    assert window.stop_spin.isEnabled()
+
+    window.stop_check.setChecked(False)
+    assert window.plan.cuts[0].recommendation.params["stop_mm"] == 0.0
+
+
+def test_the_stop_shortens_the_dovetail_in_the_real_geometry(qapp, window, tmp_path):
+    """Hela vägen: kryssrutan ska synas i den byggda geometrin."""
+    import trimesh
+
+    path = tmp_path / "stopp.stl"
+    mesh_io.save_stl(trimesh.creation.box(extents=[300.0, 150.0, 50.0]), path)
+
+    def slide_length(stop: bool) -> float:
+        window.load_model(path)
+        wait_for_worker(qapp, window)
+        window.add_cut()
+        combo = window.cut_table.cellWidget(0, COLUMN_JOINT)
+        combo.setCurrentIndex(combo.findData("dovetail"))
+        window.stop_check.setChecked(stop)
+        window.start_preview()
+        wait_for_worker(qapp, window)
+        part = window.result.parts[0].mesh
+        key = trimesh.intersections.slice_mesh_plane(
+            part, [1, 0, 0], [0.5, 0, 0], cap=True, engine="manifold"
+        )
+        return float(key.bounds[1][2] - key.bounds[0][2])
+
+    through = slide_length(False)
+    stopped = slide_length(True)
+
+    assert through == pytest.approx(50.0, abs=0.3)
+    assert stopped < through - 4.0, "stoppkanten ska korta laxstjärten"

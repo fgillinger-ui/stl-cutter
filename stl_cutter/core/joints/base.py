@@ -54,6 +54,10 @@ class JointParams:
     depth_mm: float = 10.0
     angle_deg: float = 8.0
     chamfer_mm: float = 0.4
+    #: Stoppkant i botten av laxstjärtsspåret. 0 = spåret går igenom och
+    #: delarna hålls på plats av friktion. Ett värde stänger den bortre änden,
+    #: så att laxstjärten glider in och tar emot mot material.
+    stop_mm: float = 0.0
 
     # pins
     diameter_mm: float = 6.0
