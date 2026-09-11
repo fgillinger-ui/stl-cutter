@@ -131,7 +131,9 @@ class PuzzleJoint(JointBuilder):
         local_b = np.asarray(mesh_b.copy().apply_transform(frame.to_local).bounds)
         reach_a = abs(float(local_a[0][2]))
         reach_b = abs(float(local_b[1][2]))
-        amplitude = min(params.amplitude_mm, reach_a / 3.0, reach_b / 3.0)
+        amplitude = min(
+            params.amplitude_mm, reach_a / 3.0, reach_b / 3.0, params.max_protrusion_mm
+        )
         if amplitude < 0.5:
             raise JointError("Delarna är för korta för en pusselprofil.")
         params = JointParams(**{**params.__dict__, "amplitude_mm": amplitude})

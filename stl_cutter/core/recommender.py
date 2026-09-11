@@ -84,10 +84,14 @@ def _dovetail_params(analysis: SectionAnalysis, clearance: float) -> dict:
         count = 2
     else:
         count = 3
+    # Djupet är hur långt laxstjärten sticker in i den andra delen. Det behöver
+    # inte vara stort - runt 1,5 gånger halsbredden räcker gott, och ett djup
+    # som skalar med snittets längd gör bara delarna onödigt otympliga.
+    width = round(min(0.5 * short_side, 20.0), 1)
     return {
         "count": count,
-        "width_mm": round(min(0.5 * short_side, 20.0), 1),
-        "depth_mm": round(min(0.4 * long_side / count, 25.0), 1),
+        "width_mm": width,
+        "depth_mm": round(min(1.5 * width, 0.25 * long_side, 15.0), 1),
         "angle_deg": 8.0,
         "chamfer_mm": 0.4,
         "clearance_mm": clearance,

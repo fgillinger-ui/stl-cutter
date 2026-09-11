@@ -44,6 +44,10 @@ class JointParams:
     joint_type: str = "none"
     clearance_mm: float = 0.15
 
+    #: Hur långt fogens nyckel får sticka ut förbi snittet. Sätts av `cutter`
+    #: utifrån hur mycket delen får växa och ändå få plats på byggplattan.
+    max_protrusion_mm: float = 1e6
+
     # dovetail
     count: int = 2
     width_mm: float = 12.0
@@ -272,6 +276,30 @@ def reach(
     return abs(float(local_a[0][2])), abs(float(local_b[1][2]))
 
 
+#: Öar mindre än så här är skräp från snittet, inte något att fästa i.
+MIN_ISLAND_AREA_MM2 = 20.0
+
+#: Under så här djupt material är det ingen idé att bygga en nyckel.
+MIN_MATERIAL_DEPTH_MM = 2.0
+
+#: Så stor del av kontaktytan som måste ha material bakom sig.
+MATERIAL_COVERAGE = 0.9
+
+
+def islands(region, min_area: float = MIN_ISLAND_AREA_MM2) -> list[Polygon]:
+    """Kontaktytans separata öar, störst först.
+
+    Ett snitt genom en ribbad eller ihålig modell träffar flera skilda ytor -
+    varje vägg och mellanvägg blir en egen ö. Alla ska få en fog, annars sitter
+    delarna ihop på ett enda ställe.
+    """
+    if region is None or region.is_empty:
+        return []
+    parts = [region] if isinstance(region, Polygon) else list(getattr(region, "geoms", []))
+    keep = [p for p in parts if isinstance(p, Polygon) and p.area >= min_area]
+    return sorted(keep, key=lambda p: p.area, reverse=True)
+
+
 def largest_polygon(region) -> Polygon | None:
     """Största sammanhängande ytan i en shapely-geometri."""
     if region is None or region.is_empty:
@@ -426,6 +454,49 @@ class JointBuilder:
     reach_a: float = 1e6
     reach_b: float = 1e6
 
+    #: Del B och det lokala systemet, satta av `build()` så att `keys()` kan
+    #: mäta hur djupt materialet faktiskt räcker bakom kontaktytan.
+    _mesh_b: trimesh.Trimesh | None = None
+    _frame: "PlaneFrame | None" = None
+
+    def material_depth(self, island: Polygon, wanted: float) -> float:
+        """Hur långt in i del B det finns material bakom en kontaktyta.
+
+        `reach_b` är bara del B:s yttermått. I en ihålig modell - en låda, en
+        ram - kan materialet ta slut efter ett par millimeter trots att delen är
+        decimeterstor. En nyckel som sticker in i tomrummet lägger till material
+        som aldrig funnits, och fogen blir både ful och fel.
+        """
+        if self._mesh_b is None or self._frame is None or island is None:
+            return wanted
+
+        frame = self._frame
+        normal = frame.n
+        to_local = frame.to_local
+        area = island.area
+        if area <= 0:
+            return wanted
+
+        depth = float(wanted)
+        while depth >= MIN_MATERIAL_DEPTH_MM:
+            # Materialet måste finnas både längst in och halvvägs, annars är
+            # det ett tomrum någonstans på vägen.
+            if all(
+                self._covered(island, area, frame, normal, to_local, level)
+                for level in (depth, depth / 2.0)
+            ):
+                return depth
+            depth *= 0.6
+        return 0.0
+
+    def _covered(self, island, area, frame, normal, to_local, level: float) -> bool:
+        polygon = _section_polygon(
+            self._mesh_b, frame.origin + normal * level, normal, to_local
+        )
+        if polygon is None:
+            return False
+        return polygon.intersection(island).area >= MATERIAL_COVERAGE * area
+
     def keys(
         self,
         region: Polygon,
@@ -460,29 +531,53 @@ class JointBuilder:
         params: JointParams,
         offset: tuple[float, float] = (0.0, 0.0),
     ) -> tuple[trimesh.Trimesh, trimesh.Trimesh]:
-        """Bygg fogen mellan två delar. Del A får nyckeln, del B får urtaget."""
-        region, frame = contact_region(mesh_a, mesh_b, plane.origin, plane.normal)
-        if region is None:
+        """Bygg fogen mellan två delar. Del A får nyckeln, del B får urtaget.
+
+        Varje ö i kontaktytan får en egen fog. Ett snitt genom en ribbad modell
+        träffar flera skilda ytor, och en fog på bara den största hade lämnat
+        resten av skarven lös.
+        """
+        region, base_frame = contact_region(mesh_a, mesh_b, plane.origin, plane.normal)
+        patches = islands(region)
+        if not patches:
             raise JointError("Delarna har ingen gemensam kontaktyta.")
-        frame, region = aligned_frame(region, frame)
-        region = largest_polygon(region)
-        if region is None or region.area <= 1e-6:
-            raise JointError("Kontaktytan är för liten för en fog.")
 
-        self.reach_a, self.reach_b = reach(mesh_a, mesh_b, frame)
+        keys: list[trimesh.Trimesh] = []
+        pockets: list[trimesh.Trimesh] = []
+        problems: list[str] = []
 
-        keys = self.keys(region, params, grow=0.0, offset=offset)
-        pockets = self.keys(region, params, grow=params.clearance_mm, offset=offset)
+        for patch in patches:
+            # Varje ö får sin egen riktning - ribbor kan ligga åt olika håll.
+            frame, oriented = aligned_frame(patch, base_frame)
+            oriented = largest_polygon(oriented)
+            if oriented is None:
+                continue
+            self.reach_a, self.reach_b = reach(mesh_a, mesh_b, frame)
+            self._mesh_b, self._frame = mesh_b, frame
+            try:
+                patch_keys = self.keys(oriented, params, grow=0.0, offset=offset)
+                patch_pockets = self.keys(
+                    oriented, params, grow=params.clearance_mm, offset=offset
+                )
+            except (JointError, ValueError, IndexError, ZeroDivisionError) as exc:
+                problems.append(str(exc))
+                continue
+            keys.extend(frame.place(k) for k in patch_keys)
+            pockets.extend(frame.place(p) for p in patch_pockets)
+
         if not keys or not pockets:
-            raise JointError(f"Ingen {self.joint_type} fick plats i kontaktytan.")
+            detail = problems[0] if problems else "kontaktytan är för liten"
+            raise JointError(f"Ingen {self.joint_type} fick plats: {detail}")
 
-        key = union([frame.place(k) for k in keys]) if len(keys) > 1 else frame.place(keys[0])
-        pocket = (
-            union([frame.place(p) for p in pockets])
-            if len(pockets) > 1
-            else frame.place(pockets[0])
-        )
+        if problems:
+            log.info(
+                "%s byggdes på %d av %d ytor; %d fick inte plats.",
+                self.joint_type,
+                len(patches) - len(problems),
+                len(patches),
+                len(problems),
+            )
 
-        out_a = union([mesh_a, key])
-        out_b = difference([mesh_b, pocket])
+        out_a = union([mesh_a, *keys])
+        out_b = difference([mesh_b, *pockets])
         return out_a, out_b

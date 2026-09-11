@@ -90,10 +90,20 @@ class PinsJoint(JointBuilder):
 
         # Hålet blir clearance större i radie och 0,3 mm djupare än pinnen.
         extra_depth = params.extra_hole_depth_mm if grow > 0 else 0.0
-        # Pinnen får inte gå igenom del B.
-        pin_length = min(params.length_mm, max(self.reach_b - 1.0, 0.0))
+        # Pinnen får inte gå igenom del B eller göra delen för stor för plattan.
+        pin_length = min(
+            params.length_mm, max(self.reach_b - 1.0, 0.0), params.max_protrusion_mm
+        )
+        # Hålet blir 0,3 mm djupare än pinnen, så materialet måste räcka till det.
+        pin_length = max(
+            self.material_depth(region, pin_length + params.extra_hole_depth_mm)
+            - params.extra_hole_depth_mm,
+            0.0,
+        )
         if pin_length < 2.0:
-            raise JointError("Del B är för kort för en styrpinne.")
+            raise JointError(
+                f"Bara {pin_length:.1f} mm material att fästa i - för lite för en styrpinne."
+            )
         length = OVERLAP_MM + pin_length + extra_depth
         chamfer = 0.0 if grow > 0 else min(0.6, radius * 0.4)
 

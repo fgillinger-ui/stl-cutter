@@ -154,6 +154,15 @@ lim under muttern om du vill vara säker.
 **För löst.** Sänk toleransen på samma sätt. Under 0,05 mm blir det oftast
 omöjligt att montera.
 
+**Det blev bara en fog på skarven, trots att modellen har flera väggar.**
+Det var ett fel som är rättat — numera får varje vägg och mellanvägg som snittet
+träffar en egen fog.
+
+**"Bara N mm marginal till byggvolymen, så fogen får inte plats."** Delen fyller
+nästan hela byggplattan, och en fog som sticker ut skulle göra den för stor. Öka
+marginalen i skrivarprofilen (steg 2 i programmet) så att delarna planeras
+mindre, eller välj en skrivare med större byggvolym.
+
 **Programmet valde en enklare fog än du bad om.** Då fick den fogen inte plats i
 materialet. Du får en förklaring i statusrutan och i `split_report.json`. Prova
 att flytta snittet (analysera om med en annan skrivarprofil, eller kapa i en

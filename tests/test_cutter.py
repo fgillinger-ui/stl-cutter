@@ -221,3 +221,61 @@ def test_report_records_the_source_damage(tmp_path, big_box, printer):
 
     report = json.loads(export.report_file.read_text(encoding="utf-8"))
     assert report["result"]["source_open_edges"] == 0
+
+
+def test_build_volume_slack_uses_sorted_dimensions(printer):
+    """Delen får vridas på plattan, så måtten jämförs sorterade."""
+    import trimesh
+
+    from stl_cutter.core.cutter import Part, build_volume_slack
+
+    part = Part(index=1, mesh=trimesh.creation.box(extents=[240.0, 100.0, 50.0]))
+
+    # 246 mm användbart: 246 - 240 = 6 mm kvar i det trängsta ledet.
+    assert build_volume_slack(part, printer) == pytest.approx(6.0)
+
+
+def test_joints_never_push_a_part_out_of_the_build_volume(printer):
+    """En fog som gör delen för stor löser inget - den byter bara problem."""
+    import trimesh
+
+    from stl_cutter.core.planner import plan_splits
+
+    # Två delar som nätt och jämnt får plats: 244 mm mot 246 mm användbart.
+    tight = trimesh.creation.box(extents=[488.0, 150.0, 60.0])
+    plan = plan_splits(tight, printer, auto_orient=False, analyse=True)
+    result = cut_mesh(tight, plan, joints=True, printer=printer, force_joint="dovetail")
+
+    assert parts_fit(result, printer) == [], "delarna ska fortfarande få plats"
+    assert result.all_watertight
+
+
+def test_a_cut_through_ribs_gets_a_joint_per_wall(printer):
+    """Hela kedjan: ribbad modell in, flera fogar per skarv ut."""
+    import trimesh
+
+    from stl_cutter.core.planner import plan_splits
+    from tests.test_joints import ribbed_frame
+
+    frame = ribbed_frame()
+    plan = plan_splits(frame, printer, auto_orient=False, analyse=True)
+    result = cut_mesh(frame, plan, joints=True, printer=printer, force_joint="dovetail")
+
+    built = [j for j in result.joints if j.applied]
+    assert built, "inga fogar byggdes"
+    assert result.all_watertight
+
+    # Minst en skarv ska ha fler än en laxstjärt.
+    most = 0
+    for part in result.parts:
+        for axis, position in ((c.plane.axis, c.plane.position) for c in plan.cuts):
+            normal = [0.0, 0.0, 0.0]
+            normal[axis] = 1.0
+            origin = [0.0, 0.0, 0.0]
+            origin[axis] = position + 0.3
+            keys = trimesh.intersections.slice_mesh_plane(
+                part.mesh, normal, origin, cap=True, engine="manifold"
+            )
+            if keys is not None and len(keys.faces):
+                most = max(most, int(keys.body_count))
+    assert most > 1, "varje ribba ska få en egen fog, inte bara den största ytan"

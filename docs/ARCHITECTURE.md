@@ -226,7 +226,10 @@ Del A ligger under planet och får fogens **hane**, del B över och får **honan
 
 **Generell metod** — `JointBuilder.build()`: `keys()` bygger nyckeln som solid i
 det lokala systemet, den adderas till A, och samma nyckel uppförstorad med
-`clearance_mm` per sida subtraheras från B. `manifold3d` används genomgående.
+`clearance_mm` per sida subtraheras från B. **Varje ö i kontaktytan får en egen
+fog** (`islands()`): ett snitt genom en ribbad eller ihålig modell träffar flera
+skilda ytor, och en fog på bara den största hade lämnat resten av skarven lös.
+Varje ö får dessutom sin egen riktning, eftersom ribbor kan ligga åt olika håll. `manifold3d` används genomgående.
 Nycklarna överlappar 1 mm in i den egna delen (`OVERLAP_MM`) så att booleaner
 aldrig möts exakt kant-i-kant.
 
@@ -250,6 +253,24 @@ kapas till halva del B:s djup, pinnar till del B:s djup minus 1 mm, och
 pusselamplituden till en tredjedel av respektive dels djup. En laxstjärt kräver
 minst 6 mm tjocklek.
 
+`reach_b` är dock bara del B:s **yttermått**. I en ihålig modell kan materialet
+ta slut efter ett par millimeter trots att delen är decimeterstor, och en nyckel
+som sticker in i tomrummet lägger till material som aldrig funnits.
+`JointBuilder.material_depth()` mäter därför det verkliga djupet: den
+sektionerar del B på det önskade djupet **och halvvägs dit**, och kräver att
+minst `MATERIAL_COVERAGE` (90 %) av kontaktytan har material bakom sig. Räcker
+det inte halveras djupet stegvis tills det gör det, eller tills
+`MIN_MATERIAL_DEPTH_MM` (2 mm) underskrids och ön hoppas över.
+
+**Begränsning mot byggvolymen** — nyckeln gör en av delarna större.
+`cutter.build_volume_slack()` räknar ut hur mycket en del får växa och ändå få
+plats (sorterade mått mot sorterad byggvolym, eftersom delen får vridas), och
+`apply_joints()` sätter `JointParams.max_protrusion_mm` till den **minsta**
+marginalen av de två delarna — vilken som får nyckeln avgörs först under bygget.
+Alla fogtyper, inklusive de kompletterande styrpinnarna, lyder under taket.
+Finns mindre än `MIN_USEFUL_PROTRUSION_MM` (2 mm) att växa på byggs ingen fog,
+och användaren får veta att marginalen i skrivarprofilen behöver ökas.
+
 **Robusthetskedja** — `joints.build_joint()` kontrollerar efter varje boolean att
 resultatet är watertight, har konsekventa normaler och att den sammanlagda
 volymen ligger mellan 50 % och 102 % av utgångsläget. Vid problem provas i tur
@@ -257,7 +278,10 @@ och ordning:
 
 1. samma fog på städade meshar (`process(validate=True)`),
 2. samma fog förskjuten 0,5 mm i planet,
-3. en enklare fogtyp: `dovetail`/`puzzle`/`screw` → `pins` → plant snitt.
+3. **fogen vänd**: nyckeln läggs på den andra delen i stället. Det räddar snitt
+   där den ena sidan är ihålig bakom kontaktytan men den andra har material —
+   till exempel när snittet skrapar kanten på en mellanvägg,
+4. en enklare fogtyp: `dovetail`/`puzzle`/`screw` → `pins` → plant snitt.
 
 Delarna returneras alltid — `build_joint()` kraschar aldrig utan resultat, och
 varje försök loggas i `JointResult.attempts`.

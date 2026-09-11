@@ -120,6 +120,15 @@ def _validate(
     return problems
 
 
+def _flip(plane):
+    """Samma plan sett från andra hållet - byter vilken del som får nyckeln."""
+    return type(plane)(
+        origin=plane.origin,
+        normal=tuple(-float(v) for v in plane.normal),
+        axis=plane.axis,
+    )
+
+
 def _attempt(
     builder: JointBuilder,
     mesh_a: trimesh.Trimesh,
@@ -151,6 +160,9 @@ def _add_guide_pins(
         diameter_mm=params.guide_pin_diameter_mm,
         length_mm=min(2.5 * params.guide_pin_diameter_mm, 15.0),
         edge_margin_mm=params.edge_margin_mm,
+        # Styrpinnarna lyder under samma tak som huvudfogen - annars kan de
+        # ensamma göra delen för stor för byggplattan.
+        max_protrusion_mm=params.max_protrusion_mm,
     )
     try:
         out_a, out_b = _attempt(
@@ -192,22 +204,47 @@ def build_joint(
         builder = get_builder(joint_type)
         active = JointParams(**{**params.__dict__, "joint_type": joint_type})
 
+        # Sista strategin vänder på fogen: nyckeln läggs på den andra delen.
+        # Det räddar snitt där den ena sidan är ihålig bakom kontaktytan men
+        # den andra har gott om material.
         strategies = [
-            ("direkt", mesh_a, mesh_b, (0.0, 0.0)),
-            ("städade meshar", mesh_a.copy().process(validate=True),
-             mesh_b.copy().process(validate=True), (0.0, 0.0)),
-            ("förskjuten 0,5 mm", mesh_a, mesh_b, (RETRY_OFFSET_MM, RETRY_OFFSET_MM)),
+            ("direkt", mesh_a, mesh_b, plane, (0.0, 0.0), False),
+            (
+                "städade meshar",
+                mesh_a.copy().process(validate=True),
+                mesh_b.copy().process(validate=True),
+                plane,
+                (0.0, 0.0),
+                False,
+            ),
+            (
+                "förskjuten 0,5 mm",
+                mesh_a,
+                mesh_b,
+                plane,
+                (RETRY_OFFSET_MM, RETRY_OFFSET_MM),
+                False,
+            ),
+            ("nyckeln på andra delen", mesh_b, mesh_a, _flip(plane), (0.0, 0.0), True),
         ]
 
-        for label, a_in, b_in, offset in strategies:
+        for label, first, second, active_plane, offset, swapped in strategies:
             try:
-                out_a, out_b = _attempt(
-                    builder, a_in, b_in, plane, active, offset, volumes
+                out_first, out_second = _attempt(
+                    builder,
+                    first,
+                    second,
+                    active_plane,
+                    active,
+                    offset,
+                    tuple(reversed(volumes)) if swapped else volumes,
                 )
             except (JointError, ValueError, IndexError, ZeroDivisionError) as exc:
                 attempts.append(f"{joint_type} ({label}): {exc}")
                 log.debug("Fog %s misslyckades (%s): %s", joint_type, label, exc)
                 continue
+
+            out_a, out_b = (out_second, out_first) if swapped else (out_first, out_second)
 
             attempts.append(f"{joint_type} ({label}): OK")
             if label != "direkt":
