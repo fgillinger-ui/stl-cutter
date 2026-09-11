@@ -88,6 +88,15 @@ delarna i olika färger. Dra i reglaget *Spräng isär* för att se fogarna, och
 kryssa i *Visa byggplatta* för att se skrivarens plattstorlek som rutnät.
 Kryssrutan *Ljus bakgrund* växlar mellan ljus och mörk vy — valet sparas.
 
+### Att se runt modellen
+
+| Gör så här | Vad som händer |
+|-----------|----------------|
+| Dra med **höger** eller **vänster** musknapp | Vrider modellen så att du kan se den från alla håll |
+| **Mushjulet** | Zoomar in och ut |
+| **Mittenknappen**, eller **Ctrl** + dra | Flyttar vyn i sidled |
+| **Högerklick** utan att dra | Meny med färdiga vinklar: framifrån, ovanifrån, från sidan, samt *Anpassa till modellen* |
+
 Analys och kapning kan ta någon minut på stora modeller. Det går alltid att
 trycka *Avbryt* — fönstret slutar aldrig svara. Meddelanden visas i rutan
 längst ner; den fullständiga loggen skrivs till

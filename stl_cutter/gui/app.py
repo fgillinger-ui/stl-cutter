@@ -85,6 +85,10 @@ class MainWindow(QMainWindow):
         self._load_printers()
         self._apply_settings()
         self.status("Öppna en STL- eller 3MF-fil för att börja.")
+        self.status(
+            "Tips: dra med musen i 3D-vyn för att vrida modellen, "
+            "högerklicka för färdiga vinklar."
+        )
 
     # ------------------------------------------------------------------
     # Uppbyggnad

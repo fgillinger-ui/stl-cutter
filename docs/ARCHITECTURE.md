@@ -346,6 +346,13 @@ utan, för gränssnittet där namnet redan står bredvid. `gui.joint_images` let
 upp dem och faller tillbaka på ingen bild om de saknas, `gui.joint_help` visar
 alla fem i ett fönster.
 
+**Musen i 3D-vyn** — `ModelView` skriver över `mouseMoveEvent` så att **höger**
+musknapp vrider kameran precis som vänster; pyqtgraph använder i grunden bara
+vänster. Ctrl + dra flyttar vyn i stället. Ett högerklick **utan** dragning
+(mindre än `CLICK_SLOP_PX`) öppnar i stället menyn med färdiga vinklar
+(`STANDARD_VIEWS`) och *Anpassa till modellen*, som zoomar till
+`content_bounds()` — de synliga delarnas box inklusive explosionsförskjutningen.
+
 **3D-vyn** — bakgrunden går att växla mellan ljus (standard) och mörk med en
 kryssruta; modellens och byggplattans färger byts med den, så att inget
 försvinner mot underlaget. Valet sparas i inställningarna.
