@@ -120,6 +120,21 @@ def _validate(
     return problems
 
 
+def _first_reason(attempts: list[str], joint_type: str) -> str:
+    """Den första riktiga förklaringen till varför en fogtyp inte gick att bygga.
+
+    Kedjan gör flera försök och alla misslyckas av samma skäl. Användaren är
+    hjälpt av orsaken, inte av att den upprepas fyra gånger.
+    """
+    prefix = f"{joint_type} ("
+    for attempt in attempts:
+        if attempt.startswith(prefix) and not attempt.endswith(": OK"):
+            _, _, message = attempt.partition("): ")
+            if message:
+                return message if message.endswith(".") else f"{message}."
+    return "orsaken är okänd."
+
+
 def _flip(plane):
     """Samma plan sett från andra hållet - byter vilken del som får nyckeln."""
     return type(plane)(
@@ -265,9 +280,11 @@ def build_joint(
             )
 
         fallback = builder.fallback
+        reason = _first_reason(attempts, joint_type)
         if fallback is None:
             warnings.append(
-                f"Fogen {joint_type!r} gick inte att bygga - snittet lämnas plant."
+                f"Fogen {joint_type!r} gick inte att bygga: {reason} "
+                "Snittet lämnas plant."
             )
             log.warning(warnings[-1])
             return JointResult(
@@ -275,7 +292,9 @@ def build_joint(
                 warnings=warnings, attempts=attempts,
             )
 
-        warnings.append(f"Fogen {joint_type!r} gick inte att bygga - provar {fallback!r}.")
+        warnings.append(
+            f"Fogen {joint_type!r} gick inte att bygga: {reason} Provar {fallback!r}."
+        )
         log.warning(warnings[-1])
         joint_type = fallback
 

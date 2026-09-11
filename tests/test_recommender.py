@@ -96,3 +96,24 @@ def test_empty_section_needs_no_joint(long_rod):
 
     assert best.joint_type == "none"
     assert "ingen geometri" in best.motivation
+
+
+def test_a_thin_flange_does_not_decide_the_joint_for_a_thick_cut(long_rod):
+    """Fogen byggs på den största ytan - den ska också bestämma fogtypen."""
+    import trimesh
+
+    flange = trimesh.creation.box(extents=[200.0, 60.0, 2.5])
+    flange.apply_translation([0.0, 200.0, 0.0])
+    both = trimesh.util.concatenate([long_rod, flange])
+    section = _section(both)
+
+    best, _ = recommend_joint(section, intent="glue")
+
+    assert section.min_wall_mm < 4.0, "det finns en tunn flik i snittet"
+    assert best.joint_type in ("dovetail", "pins"), "men den tjocka delen bär fogen"
+
+
+def test_a_genuinely_thin_cut_still_gets_no_joint(thin_plate):
+    best, _ = recommend_joint(_section(thin_plate), intent="glue")
+
+    assert best.joint_type == "none"

@@ -128,8 +128,15 @@ def _candidates(
     analysis: SectionAnalysis, intent: AssemblyIntent, clearance: float
 ) -> list[JointRecommendation]:
     """Poängsätt alla fogtyper. Poängen blir konfidenssiffran."""
-    wall = analysis.min_wall_mm
+    # Fogen byggs på varje ö för sig, och det är den största som bär den.
+    # Att låta en tunn flik i kanten avgöra fogvalet för hela snittet vore fel.
+    wall = analysis.main_wall_mm
     demountable = intent == "demountable"
+    thinner = (
+        f" (den tunnaste delen av snittet är {analysis.min_wall_mm:.1f} mm)"
+        if analysis.has_thinner_islands
+        else ""
+    )
     out: list[JointRecommendation] = []
 
     if analysis.empty:
@@ -148,7 +155,7 @@ def _candidates(
             JointRecommendation(
                 "none",
                 {"surface": "plan", "clearance_mm": 0.0},
-                f"Snittet är bara {wall:.1f} mm tjockt - för tunt för en fog. "
+                f"Snittet är bara {wall:.1f} mm tjockt - för tunt för en fog.{thinner} "
                 "Limma ihop den plana ytan.",
                 0.9,
             )

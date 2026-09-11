@@ -1144,6 +1144,22 @@ def _centre(view):
     return view.width() / 2, view.height() / 2
 
 
+def _plane_pixel(view, wanted=None):
+    """Hitta en skärmpunkt som träffar ett snittplan.
+
+    Mitten av vyn duger inte alltid - med flera snitt kan den hamna mellan
+    planen. Här söks ett rutnät av punkter igenom i stället.
+    """
+    width, height = view.width(), view.height()
+    for fraction_y in (0.5, 0.4, 0.6, 0.3, 0.7):
+        for fraction_x in (0.5, 0.45, 0.55, 0.4, 0.6, 0.35, 0.65, 0.3, 0.7):
+            x, y = width * fraction_x, height * fraction_y
+            hit = view.plane_at(x, y)
+            if hit is not None and (wanted is None or hit[0] == wanted):
+                return x, y, hit[0]
+    return None
+
+
 def test_the_plane_can_be_picked_in_the_view(qapp, window, model_file):
     window.load_model(model_file)
     wait_for_worker(qapp, window)
@@ -1330,3 +1346,80 @@ def test_exporting_after_a_preview_writes_the_files(qapp, window, model_file, tm
         "part_02.stl",
         "part_03.stl",
     ]
+
+
+def test_the_planes_survive_a_preview(qapp, window, model_file):
+    """Efter en förhandsgranskning måste planen gå att ta tag i igen."""
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+    window.start_analysis()
+    wait_for_worker(qapp, window)
+    window.start_preview()
+    wait_for_worker(qapp, window)
+
+    assert window.view.showing_parts
+    assert len(window.view._planes) == len(window.plan.cuts)
+    assert _plane_pixel(window.view) is not None, "inget plan går att ta tag i"
+
+
+def test_dragging_after_a_preview_returns_to_editing(qapp, window, model_file):
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+    window.start_analysis()
+    wait_for_worker(qapp, window)
+    window.start_preview()
+    wait_for_worker(qapp, window)
+    found = _plane_pixel(window.view)
+    assert found is not None
+    x, y, _ = found
+
+    _plane_drag(window.view, [(x, y), (x + 40, y), (x + 80, y)])
+
+    assert not window.view.showing_parts, "vi ska vara tillbaka i redigering"
+    assert window.result is None, "förhandsgranskningen gäller inte längre"
+    assert window.view._model_item is not None
+
+
+def test_the_cursor_shows_that_a_plane_can_be_grabbed(qapp, window, model_file):
+    from PySide6.QtCore import QEvent, QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+    window.add_cut()
+
+    def hover(x, y):
+        window.view.mouseMoveEvent(
+            QMouseEvent(
+                QEvent.MouseMove,
+                QPointF(x, y),
+                QPointF(x, y),
+                Qt.NoButton,
+                Qt.NoButton,
+                Qt.NoModifier,
+            )
+        )
+        return window.view.cursor().shape()
+
+    assert hover(*_centre(window.view)) == Qt.SizeAllCursor
+    assert hover(3, 3) == Qt.ArrowCursor
+
+
+def test_a_thin_flange_does_not_block_the_joint_in_the_gui(qapp, window, tmp_path):
+    """Samma fel som rapporterades: laxstjärt valdes men byggdes inte."""
+    import trimesh
+
+    body = trimesh.creation.box(extents=[300.0, 120.0, 40.0])
+    flange = trimesh.creation.box(extents=[300.0, 40.0, 2.5])
+    flange.apply_translation([0.0, 100.0, 0.0])
+    path = tmp_path / "med-flik.stl"
+    mesh_io.save_stl(trimesh.util.concatenate([body, flange]), path)
+
+    window.load_model(path)
+    wait_for_worker(qapp, window)
+    window.add_cut()
+    window.start_preview()
+    wait_for_worker(qapp, window)
+
+    built = [j for j in window.result.joints if j.applied]
+    assert built, "den tjocka delen ska få en fog trots den tunna fliken"

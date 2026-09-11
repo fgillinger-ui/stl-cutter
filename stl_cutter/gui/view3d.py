@@ -149,8 +149,10 @@ class ModelView(gl.GLViewWidget):
         self._explode_mm = 0.0
         self._press_pos = None
         self._planes: list = []
+        self._plane_bounds = np.zeros((2, 3))
         self._drag = None
         self.opts["distance"] = 600
+        self.setMouseTracking(True)
         self.setToolTip(MOUSE_HELP)
 
     @property
@@ -225,10 +227,17 @@ class ModelView(gl.GLViewWidget):
 
     # -- delarna ----------------------------------------------------------
 
+    @property
+    def showing_parts(self) -> bool:
+        return bool(self._part_items)
+
     def show_parts(self, parts) -> None:
-        """Visa de kapade delarna i olika färger och dölj originalmodellen."""
+        """Visa de kapade delarna i olika färger och dölj originalmodellen.
+
+        Snittplanen lämnas kvar - annars går de inte att ta tag i efter en
+        förhandsgranskning, och då kan man inte justera och titta igen.
+        """
         self.clear_parts()
-        self.clear_planes()
         if self._model_item is not None:
             self._model_item.setVisible(False)
 
@@ -384,6 +393,10 @@ class ModelView(gl.GLViewWidget):
             self._drag_plane(event)
             return
 
+        if not event.buttons():
+            self._update_hover(event)
+            return
+
         if event.buttons() & Qt.RightButton:
             position = (
                 event.position() if hasattr(event, "position") else event.localPos()
@@ -398,6 +411,12 @@ class ModelView(gl.GLViewWidget):
                 self.orbit(-diff.x(), diff.y())
             return
         super().mouseMoveEvent(event)
+
+    def _update_hover(self, event) -> None:
+        """Visa att ett plan går att ta tag i."""
+        position = event.position() if hasattr(event, "position") else event.localPos()
+        over = self.plane_at(position.x(), position.y()) is not None
+        self.setCursor(Qt.SizeAllCursor if over else Qt.ArrowCursor)
 
     def _drag_plane(self, event) -> None:
         """Flytta eller vinkla planet som användaren håller i."""

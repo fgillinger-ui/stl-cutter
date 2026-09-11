@@ -68,6 +68,24 @@ class SectionAnalysis:
     empty: bool = False
 
     @property
+    def main_wall_mm(self) -> float:
+        """Tjockleken på snittytans största ö.
+
+        `min_wall_mm` är minsta värdet över alla öar, och en enda tunn flik gör
+        att hela snittet bedöms som tunt. För att välja fogtyp är det den ö som
+        bär fogen som räknas - alltså den största.
+        """
+        if not self.contours:
+            return self.min_wall_mm
+        biggest = max(self.contours, key=lambda c: c.area_mm2)
+        return float(biggest.thickness_mm)
+
+    @property
+    def has_thinner_islands(self) -> bool:
+        """Finns det tunnare öar än den som bär fogen?"""
+        return self.min_wall_mm < self.main_wall_mm - 1e-6
+
+    @property
     def cuts_thin_detail(self) -> bool:
         """Skär snittet genom detaljer tunnare än 3 mm?"""
         return self.min_wall_mm < THIN_WALL_MM
@@ -94,6 +112,7 @@ class SectionAnalysis:
             "perimeter_mm": round(self.perimeter_mm, 2),
             "contour_count": self.contour_count,
             "min_wall_mm": round(self.min_wall_mm, 3),
+            "main_wall_mm": round(self.main_wall_mm, 3),
             "roundness": round(self.roundness, 4),
             "aspect_ratio": round(self.aspect_ratio, 3),
             "bbox_mm": [round(v, 3) for v in self.bbox_mm],

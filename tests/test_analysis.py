@@ -1,5 +1,6 @@
 import math
 
+import pytest
 import trimesh
 
 from stl_cutter.core.analysis import (
@@ -78,3 +79,24 @@ def test_largest_inscribed_diameter_of_a_circle():
     from shapely.geometry import Point
 
     assert abs(largest_inscribed_diameter(Point(0, 0).buffer(25.0)) - 50.0) < 0.5
+
+
+def test_the_main_wall_is_the_biggest_island_not_the_thinnest(long_rod):
+    """En tunn flik i kanten ska inte avgöra hur hela snittet bedöms."""
+    thin = trimesh.creation.box(extents=[200.0, 60.0, 2.5])
+    thin.apply_translation([0.0, 200.0, 0.0])
+    both = trimesh.util.concatenate([long_rod, thin])
+
+    result = _section(both)
+
+    assert result.contour_count == 2
+    assert result.min_wall_mm == pytest.approx(2.5, abs=0.15)
+    assert result.main_wall_mm == pytest.approx(60.0, abs=0.3)
+    assert result.has_thinner_islands
+
+
+def test_a_single_island_has_no_thinner_neighbours(long_rod):
+    result = _section(long_rod)
+
+    assert result.main_wall_mm == pytest.approx(result.min_wall_mm)
+    assert not result.has_thinner_islands

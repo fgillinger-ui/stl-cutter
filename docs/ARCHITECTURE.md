@@ -150,7 +150,15 @@ att skyllas på kapningen. Varje del körs genom samma reparation efter snittet.
 `Path2D` och mäter per ö (`polygons_full`):
 
 * **area** och **omkrets** — summerat över alla öar.
-* **väggtjocklek** — `largest_inscribed_diameter()` rastrerar konturen och kör
+* **väggtjocklek** — två mått: `min_wall_mm` är det tunnaste värdet över alla
+  öar, och `main_wall_mm` tjockleken på den **största** ön. Fogen byggs på varje
+  ö för sig och det är den största som bär den, så `recommender` väljer fogtyp
+  efter `main_wall_mm`. Att låta en tunn flik i kanten avgöra hela snittet gav
+  `none` på snitt där en laxstjärt hade suttit utmärkt. `min_wall_mm` används
+  fortfarande för varningen om tunna detaljer, och nämns i motiveringen när
+  öarna skiljer sig åt (`has_thinner_islands`).
+
+  Tjockleken mäts med `largest_inscribed_diameter()`, som rastrerar konturen och kör
   `scipy.ndimage.distance_transform_edt`; den största inskrivna cirkelns diameter
   är konturens lokala tjocklek. Upplösningen styrs av konturens **korta** sida
   (minst 64 pixlar), annars mäts tunna plattor för grovt. Halva pixeln dras av
@@ -291,7 +299,10 @@ och ordning:
 4. en enklare fogtyp: `dovetail`/`puzzle`/`screw` → `pins` → plant snitt.
 
 Delarna returneras alltid — `build_joint()` kraschar aldrig utan resultat, och
-varje försök loggas i `JointResult.attempts`.
+varje försök loggas i `JointResult.attempts`. Varningen till användaren bär med
+sig **orsaken** från det första försöket (`_first_reason()`), med mått och allt:
+"Snittet är bara 3.0 mm tjockt - för tunt för en laxstjärt". Att bara skriva att
+fogen inte gick att bygga gav ingen ledtråd om vad man skulle göra åt det.
 
 **Styrpinnar som komplement** — när `params.guide_pins > 0` och fogen inte redan
 är `pins`, `screw` eller `puzzle` byggs pinnarna i ett andra pass. (Pusselfogen
@@ -409,6 +420,12 @@ plan går dragningen inte till kameran utan till planet:
   linje som ligger närmast blickstrålen (`_closest_on_axis()`).
 * med **Shift** vrids normalen kring vyns upp- och högeraxel, vilket ger ett
   vinklat snitt.
+
+`show_parts()` lämnar planen kvar ovanpå delarna - annars gick de inte att ta
+tag i efter en förhandsgranskning, och då kunde man inte justera och titta igen.
+Tar man tag i ett plan medan delarna visas kastas förhandsgranskningen och vyn
+går tillbaka till modellen (`_leave_preview()`). Pekaren byter form över ett
+plan, så att det syns att det går att gripa.
 
 Signalerna `plane_dragged`, `plane_tilted` och `plane_released` går till
 `MainWindow`, som uppdaterar planen och tabellen. Analysen körs först vid
