@@ -870,6 +870,7 @@ class MainWindow(QMainWindow):
         """Användaren drar i ett plan: flytta det längs sin egen normal."""
         if self.plan is None or not (0 <= number < len(self.plan.cuts)):
             return
+        self._leave_preview()
         cut = self.plan.cuts[number]
         plane = cut.plane
         origin = np.asarray(plane.origin, dtype=float) + plane.unit_normal * distance_mm
@@ -885,6 +886,7 @@ class MainWindow(QMainWindow):
         """Shift+dra: vinkla planet kring vyns egna axlar."""
         if self.plan is None or not (0 <= number < len(self.plan.cuts)):
             return
+        self._leave_preview()
         cut = self.plan.cuts[number]
         plane = cut.plane
 
@@ -923,6 +925,18 @@ class MainWindow(QMainWindow):
         )
         cuts[number].plane = cut.plane
         self._rebuild_plan(cuts, select=cuts[number])
+
+    def _leave_preview(self) -> None:
+        """Rör man ett plan gäller inte förhandsgranskningen längre."""
+        if not self.view.showing_parts:
+            return
+        self.result = None
+        self.view.clear_parts()
+        if self.mesh_info is not None and self.plan is not None:
+            self.view.show_model(oriented_mesh(self.mesh_info.mesh, self.plan))
+            self.view.show_planes(self.plan.planes, self.plan.bounds)
+            self.on_bed_toggled()
+        self._update_summary()
 
     def _sync_row_position(self, number: int) -> None:
         """Håll tabellen i takt med planet medan det dras."""
@@ -1087,6 +1101,8 @@ class MainWindow(QMainWindow):
         self._report_result(result)
         self.status("Förhandsgranskning - inga filer har skrivits.")
         self.view.show_parts(result.parts)
+        # Planen ligger kvar ovanpå delarna, så man kan justera och titta igen.
+        self.view.show_planes(self.plan.planes, self.plan.bounds)
         if self.explode_slider.value() == 0:
             self.explode_slider.setValue(DEFAULT_PREVIEW_EXPLODE_MM)
         self.on_bed_toggled()

@@ -534,3 +534,18 @@ def test_puzzle_keeps_the_parts_within_their_own_footprint():
     # Delarna får bukta några mm förbi snittet, men inte täcka hela modellen.
     assert float(result.mesh_a.bounds[1][1]) < 8.0
     assert float(result.mesh_b.bounds[0][1]) > -8.0
+
+
+def test_a_failed_joint_says_why():
+    """Användaren ska få veta orsaken, inte bara att det misslyckades."""
+    below, above = split([300.0, 60.0, 3.0])
+    params = JointParams(joint_type="dovetail", count=1, width_mm=15.0, depth_mm=10.0)
+
+    result = build_joint(below, above, PLANE, params)
+
+    assert result.warnings
+    reason = result.warnings[0]
+    assert "3.0 mm" in reason, f"orsaken saknar måttet: {reason}"
+    assert "tunt" in reason
+    # Samma orsak ska inte upprepas en gång per försök.
+    assert reason.count("för tunt") == 1

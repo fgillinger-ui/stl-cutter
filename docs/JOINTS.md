@@ -165,10 +165,12 @@ som nätt och jämnt går att dela räcker det inte alltid. Öka marginalen i
 skrivarprofilen (steg 2 i programmet) så att delarna planeras mindre, eller välj
 en skrivare med större byggvolym.
 
-**Programmet valde en enklare fog än du bad om.** Då fick den fogen inte plats i
-materialet. Du får en förklaring i statusrutan och i `split_report.json`. Prova
-att flytta snittet (analysera om med en annan skrivarprofil, eller kapa i en
-annan riktning) om du verkligen vill ha den fogtypen.
+**Programmet valde en enklare fog än du bad om.** Meddelandet säger varför, med
+mått: *"Snittet är bara 3.0 mm tjockt - för tunt för en laxstjärt."* Flytta
+snittet dit materialet är tjockare, eller acceptera en limfog. Under 4 mm finns
+det ingen fog som går att skriva ut.
+
+Hela förklaringen finns i statusrutan och i `split_report.json`.
 
 **Slicern säger "non-manifold edges".** Originalmodellen hade hål som inte gick
 att laga, och delarna ärver dem. Se avsnittet Felsökning i README för hur du

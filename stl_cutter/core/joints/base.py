@@ -580,8 +580,8 @@ class JointBuilder:
             pockets.extend(frame.place(p) for p in patch_pockets)
 
         if not keys or not pockets:
-            detail = problems[0] if problems else "kontaktytan är för liten"
-            raise JointError(f"Ingen {self.joint_type} fick plats: {detail}")
+            # Det yttre felmeddelandet säger redan vilken fogtyp det gäller.
+            raise JointError(problems[0] if problems else "kontaktytan är för liten.")
 
         if problems:
             log.info(
