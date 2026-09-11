@@ -84,10 +84,19 @@ class DovetailJoint(JointBuilder):
             raise JointError(
                 f"Snittet är bara {v_span:.1f} mm tjockt - för tunt för en laxstjärt."
             )
-        # Laxstjärten får inte sticka ut genom del B eller gröpa ur del A.
-        depth = min(params.depth_mm, max(u_span, v_span), 0.5 * self.reach_b)
+        # Laxstjärten får inte sticka ut genom del B, gröpa ur del A, eller
+        # göra delen för stor för byggplattan.
+        depth = min(
+            params.depth_mm,
+            max(u_span, v_span),
+            0.5 * self.reach_b,
+            params.max_protrusion_mm,
+        )
+        depth = self.material_depth(region, depth)
         if depth < 2.0:
-            raise JointError("Del B är för kort för en laxstjärt.")
+            raise JointError(
+                f"Bara {depth:.1f} mm material att fästa i - för lite för en laxstjärt."
+            )
         count, width = fit_dovetails(
             u_span, params.count, params.width_mm, depth, params.angle_deg
         )

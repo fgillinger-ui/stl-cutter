@@ -19,6 +19,7 @@ from shapely.geometry import Polygon
 
 from .base import (
     OVERLAP_MM,
+    islands,
     JointBuilder,
     JointError,
     JointParams,
@@ -65,10 +66,14 @@ class ScrewJoint(JointBuilder):
         params: JointParams,
         offset: tuple[float, float] = (0.0, 0.0),
     ):
-        region, frame = contact_region(mesh_a, mesh_b, plane.origin, plane.normal)
-        if region is None:
+        region, base_frame = contact_region(mesh_a, mesh_b, plane.origin, plane.normal)
+        patches = islands(region)
+        if not patches:
             raise JointError("Delarna har ingen gemensam kontaktyta.")
-        frame, region = aligned_frame(region, frame)
+
+        # En skruv kräver mycket plats. Den läggs i den största ytan; övriga
+        # ytor får styrpinnar via fallback om skruven inte får plats där.
+        frame, region = aligned_frame(patches[0], base_frame)
         region = largest_polygon(region)
         if region is None or region.area <= 1e-6:
             raise JointError("Kontaktytan är för liten för en skruvfog.")
@@ -128,7 +133,9 @@ class ScrewJoint(JointBuilder):
             cuts_b.extend([nut, tip])
 
         pin_radius = params.guide_pin_diameter_mm / 2.0
-        pin_length = min(2.5 * params.guide_pin_diameter_mm, b_depth - 1.0)
+        pin_length = min(
+            2.5 * params.guide_pin_diameter_mm, b_depth - 1.0, params.max_protrusion_mm
+        )
         for x, y in pin_points:
             pin = chamfered_cylinder(pin_radius, OVERLAP_MM + pin_length, 0.5)
             pin.apply_translation([x, y, -OVERLAP_MM])

@@ -331,3 +331,156 @@ def test_dovetail_is_clamped_to_part_b_length():
     if result.joint_type == "dovetail":
         assert float(result.mesh_a.bounds[1][0]) < float(above.bounds[1][0])
     assert result.mesh_a.is_watertight and result.mesh_b.is_watertight
+
+
+# --------------------------------------------------------------------------
+# Snitt genom ribbade och ihåliga modeller
+# --------------------------------------------------------------------------
+
+
+def ribbed_frame(rib_count: int = 5) -> trimesh.Trimesh:
+    """Ram med mellanväggar och utan botten - som en filamentlåda.
+
+    Ett snitt tvärs igenom träffar varje vägg som en egen ö.
+    """
+    from stl_cutter.core.mesh_io import merge_bodies
+
+    thickness, height, width, depth = 9.4, 40.0, 625.0, 341.0
+    bodies = []
+    for x, y, ex, ey in (
+        (-(width - thickness) / 2, 0, thickness, depth),
+        ((width - thickness) / 2, 0, thickness, depth),
+        (0, -(depth - thickness) / 2, width, thickness),
+        (0, (depth - thickness) / 2, width, thickness),
+    ):
+        wall = trimesh.creation.box(extents=[ex, ey, height])
+        wall.apply_translation([x, y, 0])
+        bodies.append(wall)
+    for i in range(rib_count):
+        rib = trimesh.creation.box(extents=[thickness, depth, height])
+        rib.apply_translation([-250 + i * 125, 0, 0])
+        bodies.append(rib)
+    return merge_bodies(bodies)
+
+
+def split_along_y(mesh, position=0.0):
+    below = trimesh.intersections.slice_mesh_plane(
+        mesh, [0, -1, 0], [0, position, 0], cap=True, engine="manifold"
+    )
+    above = trimesh.intersections.slice_mesh_plane(
+        mesh, [0, 1, 0], [0, position, 0], cap=True, engine="manifold"
+    )
+    return below, above
+
+
+Y_PLANE = Plane(origin=(0.0, 0.0, 0.0), normal=(0.0, 1.0, 0.0), axis=1)
+
+
+def test_a_cut_through_ribs_gives_several_islands():
+    """Utgångsläget: kontaktytan är inte en yta utan sju."""
+    from stl_cutter.core.joints.base import contact_region, islands
+
+    below, above = split_along_y(ribbed_frame())
+    region, _ = contact_region(below, above, [0, 0, 0], [0, 1, 0])
+
+    assert len(islands(region)) == 7
+
+
+def test_every_island_gets_its_own_joint():
+    """Det användaren såg: bara en laxstjärt trots sju ytor att fästa i."""
+    below, above = split_along_y(ribbed_frame())
+    params = JointParams(joint_type="dovetail", count=1, width_mm=12.0, depth_mm=8.0)
+
+    result = build_joint(below, above, Y_PLANE, params)
+
+    assert result.applied
+    protruding = trimesh.intersections.slice_mesh_plane(
+        result.mesh_a, [0, 1, 0], [0, 0.3, 0], cap=True, engine="manifold"
+    )
+    assert protruding.body_count == 7, "varje ribba ska få en egen laxstjärt"
+
+
+def test_tiny_islands_are_ignored():
+    from shapely.geometry import box as shapely_box
+
+    from stl_cutter.core.joints.base import MIN_ISLAND_AREA_MM2, islands
+
+    from shapely.geometry import MultiPolygon
+
+    big = shapely_box(0, 0, 50, 50)
+    crumb = shapely_box(100, 100, 101, 101)  # 1 mm²
+    assert crumb.area < MIN_ISLAND_AREA_MM2
+
+    kept = islands(MultiPolygon([big, crumb]))
+
+    assert len(kept) == 1
+    assert kept[0].area == pytest.approx(2500)
+
+
+def test_a_joint_is_not_built_into_a_hollow():
+    """Nyckeln får inte sticka in där del B saknar material."""
+    frame = ribbed_frame()
+    # Snittet skrapar kanten på en mellanvägg: bara ~1 mm kvar på ena sidan.
+    below = trimesh.intersections.slice_mesh_plane(
+        frame, [-1, 0, 0], [-121.5, 0, 0], cap=True, engine="manifold"
+    )
+    above = trimesh.intersections.slice_mesh_plane(
+        frame, [1, 0, 0], [-121.5, 0, 0], cap=True, engine="manifold"
+    )
+    plane = Plane(origin=(-121.5, 0.0, 0.0), normal=(1.0, 0.0, 0.0), axis=0)
+    params = JointParams(joint_type="dovetail", count=1, width_mm=20.0, depth_mm=15.0)
+
+    result = build_joint(below, above, plane, params)
+
+    assert result.applied, "fogen ska byggas, men åt andra hållet"
+    # Nyckeln hamnade på del B, som har materialet.
+    assert float(result.mesh_b.bounds[0][0]) < -121.5
+    assert result.mesh_a.is_watertight and result.mesh_b.is_watertight
+    assert overlap_volume(result.mesh_a, result.mesh_b) < MAX_OVERLAP_MM3
+
+
+def test_material_depth_limits_the_key():
+    """En 6 mm tunn vägg ska ge en 6 mm fog, inte en 15 mm."""
+    wall = trimesh.creation.box(extents=[120.0, 12.0, 60.0])
+    below, above = split_along_y(wall)
+    params = JointParams(joint_type="dovetail", count=1, width_mm=15.0, depth_mm=40.0)
+
+    result = build_joint(below, above, Y_PLANE, params)
+
+    protrusion = float(result.mesh_a.bounds[1][1])
+    assert 0 < protrusion <= 6.0 + 0.01, "fogen ska sluta där materialet slutar"
+
+
+def test_protrusion_can_be_capped():
+    """cutter begränsar fogen så att delen får plats på byggplattan."""
+    below, above = split([200.0, 120.0, 60.0])
+    capped = JointParams(
+        joint_type="dovetail", count=1, width_mm=20.0, depth_mm=25.0, max_protrusion_mm=4.0
+    )
+
+    result = build_joint(below, above, PLANE, capped)
+
+    assert result.applied
+    assert float(result.mesh_a.bounds[1][0]) <= 4.0 + 0.01
+
+
+def test_pins_respect_the_cap_too():
+    below, above = split([200.0, 120.0, 60.0])
+    params = JointParams(
+        joint_type="pins", count=2, diameter_mm=6.0, length_mm=20.0, max_protrusion_mm=5.0
+    )
+
+    result = build_joint(below, above, PLANE, params)
+
+    assert result.applied
+    assert float(result.mesh_a.bounds[1][0]) <= 5.0 + 0.01
+
+
+def test_no_room_at_all_is_reported_not_forced():
+    below, above = split([200.0, 120.0, 60.0])
+    params = JointParams(joint_type="dovetail", max_protrusion_mm=0.5)
+
+    result = build_joint(below, above, PLANE, params)
+
+    assert result.joint_type in ("pins", "none")
+    assert not result.applied or result.fell_back

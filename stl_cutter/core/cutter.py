@@ -284,6 +284,12 @@ ADJACENCY_TOL_MM = 0.05
 #: Minsta överlapp i planet för att två delar ska anses dela en yta.
 MIN_OVERLAP_MM = 1.0
 
+#: Marginal som lämnas kvar till byggvolymen när fogens djup begränsas.
+JOINT_SIZE_RESERVE_MM = 0.5
+
+#: Under så här lite plats är det ingen idé att försöka bygga en fog.
+MIN_USEFUL_PROTRUSION_MM = 2.0
+
 
 def _overlap_in_plane(a: trimesh.Trimesh, b: trimesh.Trimesh, axis: int) -> float:
     """Minsta överlapp mellan två delar i de två axlar som inte är snittaxeln."""
@@ -317,6 +323,20 @@ def find_pairs(parts: list[Part], plan: SplitPlan) -> list[tuple[Part, Part, obj
                 if _overlap_in_plane(part_a.mesh, part_b.mesh, axis) > MIN_OVERLAP_MM:
                     pairs.append((part_a, part_b, cut))
     return pairs
+
+
+def build_volume_slack(part: "Part", printer) -> float:
+    """Hur mycket en del får växa och ändå få plats på byggplattan.
+
+    Delen får vridas på plattan, så måtten jämförs sorterade. Det minsta
+    överskottet är det som begränsar - växer delen mer än så får den inte plats
+    i någon orientering.
+    """
+    if printer is None:
+        return 1e6
+    usable = sorted(printer.usable)
+    extents = sorted(part.extents_mm)
+    return float(min(limit - size for limit, size in zip(usable, extents)))
 
 
 def _params_for(cut, printer, force_joint: str | None) -> JointParams:
@@ -353,6 +373,24 @@ def apply_joints(
         )
         params = _params_for(cut, printer, force_joint)
         if params.joint_type == "none":
+            continue
+
+        # Fogens nyckel gör en av delarna större - vilken avgörs först under
+        # bygget, eftersom fogen kan vändas om materialet tar slut. Ta därför
+        # den minsta marginalen av de två, annars byter vi ett problem mot ett
+        # värre: en del som inte får plats på byggplattan.
+        slack = min(
+            build_volume_slack(part_a, printer), build_volume_slack(part_b, printer)
+        )
+        params.max_protrusion_mm = max(slack - JOINT_SIZE_RESERVE_MM, 0.0)
+        if params.max_protrusion_mm < MIN_USEFUL_PROTRUSION_MM:
+            message = (
+                f"Snitt {cut.index}, del {part_a.index:02d}-{part_b.index:02d}: bara "
+                f"{max(slack, 0.0):.1f} mm marginal till byggvolymen, så fogen får "
+                "inte plats. Öka marginalen i skrivarprofilen eller kapa i fler delar."
+            )
+            result.warnings.append(message)
+            log.warning(message)
             continue
 
         joint = build_joint(part_a.mesh, part_b.mesh, cut.plane, params)
