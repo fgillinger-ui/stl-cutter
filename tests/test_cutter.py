@@ -255,7 +255,7 @@ def test_a_cut_through_ribs_gets_a_joint_per_wall(printer):
     import trimesh
 
     from stl_cutter.core.planner import plan_splits
-    from tests.test_joints import ribbed_frame
+    from test_joints import ribbed_frame
 
     frame = ribbed_frame()
     plan = plan_splits(frame, printer, auto_orient=False, analyse=True)
