@@ -484,3 +484,53 @@ def test_no_room_at_all_is_reported_not_forced():
 
     assert result.joint_type in ("pins", "none")
     assert not result.applied or result.fell_back
+
+
+def test_cleaning_never_breaks_a_whole_mesh():
+    """Städningen av boolean-resultat får inte öppna hål.
+
+    `nondegenerate_faces()` kastar mycket tunna trianglar. På en hel mesh kan
+    det lämna hål, och då avvisar manifold3d meshen i nästa steg - fogen
+    misslyckas trots att geometrin var i ordning.
+    """
+    from stl_cutter.core.joints.base import _clean
+
+    frame = ribbed_frame()
+    below, above = split_along_y(frame)
+    joined = trimesh.boolean.union([below, above], engine="manifold")
+    assert joined.is_watertight, "förutsättningen för testet"
+
+    cleaned = _clean(joined)
+
+    assert cleaned.is_watertight
+    # Den ska fortfarande duga som indata till nästa boolean.
+    probe = trimesh.creation.box(extents=[10, 10, 10])
+    trimesh.boolean.union([cleaned, probe], engine="manifold")
+
+
+def test_puzzle_does_not_let_a_part_swallow_its_neighbour():
+    """Vågen får bara flytta material precis vid skarven."""
+    frame = ribbed_frame()
+    below, above = split_along_y(frame)
+    volumes = (below.volume, above.volume)
+    params = JointParams(joint_type="puzzle", period_mm=40.0, amplitude_mm=5.0)
+
+    result = build_joint(below, above, Y_PLANE, params)
+
+    assert result.applied
+    assert result.joint_type == "puzzle"
+    for before, after in zip(volumes, (result.mesh_a.volume, result.mesh_b.volume)):
+        assert abs(after - before) / before < 0.10, "en del har tagit grannens material"
+    assert overlap_volume(result.mesh_a, result.mesh_b) < MAX_OVERLAP_MM3
+
+
+def test_puzzle_keeps_the_parts_within_their_own_footprint():
+    frame = ribbed_frame()
+    below, above = split_along_y(frame)
+    params = JointParams(joint_type="puzzle", period_mm=40.0, amplitude_mm=5.0)
+
+    result = build_joint(below, above, Y_PLANE, params)
+
+    # Delarna får bukta några mm förbi snittet, men inte täcka hela modellen.
+    assert float(result.mesh_a.bounds[1][1]) < 8.0
+    assert float(result.mesh_b.bounds[0][1]) > -8.0

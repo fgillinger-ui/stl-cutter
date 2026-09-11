@@ -167,3 +167,36 @@ def test_plan_without_analysis_is_the_phase_one_behaviour(big_box, printer):
     lower, upper = plan.bounds[0][0], plan.bounds[1][0]
     expected = [lower + (upper - lower) * i / 3.0 for i in (1, 2)]
     assert np.allclose(positions, expected)
+
+
+def test_a_cut_that_fills_the_build_plate_is_penalised():
+    """Delen måste få växa några millimeter - fogen ska sticka ut."""
+    tight = score_candidate(
+        _analysis(), 0.0, 0.0, (0.33, 0.33), 300.0, slabs_mm=(245.0, 200.0), usable_mm=246.0
+    )
+    roomy = score_candidate(
+        _analysis(), 0.0, 0.0, (0.33, 0.33), 300.0, slabs_mm=(200.0, 200.0), usable_mm=246.0
+    )
+
+    assert tight.total > roomy.total
+    assert tight.penalties["joint_room"] > 0
+    assert "joint_room" not in roomy.penalties
+
+
+def test_joint_room_is_off_without_build_volume_data():
+    score = score_candidate(_analysis(), 0.0, 0.0, (0.33, 0.33), 300.0)
+
+    assert "joint_room" not in score.penalties
+
+
+def test_the_planner_leaves_room_for_the_joint(printer):
+    """Snitten ska inte läggas så att en del fyller plattan helt."""
+    import trimesh
+
+    model = trimesh.creation.box(extents=[620.0, 150.0, 40.0])
+    plan = plan_splits(model, printer, auto_orient=False, analyse=True)
+
+    usable = printer.usable[0]
+    for box in plan.part_boxes:
+        assert box.size_mm[0] <= usable
+        assert usable - box.size_mm[0] >= 5.0, "ingen plats kvar för fogen"

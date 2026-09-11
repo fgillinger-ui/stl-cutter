@@ -143,10 +143,32 @@ class PuzzleJoint(JointBuilder):
         grown = profile.buffer(params.clearance_mm, join_style=1)
 
         margin = OVERLAP_MM + params.clearance_mm
-        solid = prism_along_v(profile, miny - margin, maxy + margin)
-        solid_grown = prism_along_v(grown, miny - margin, maxy + margin)
+        solid = frame.place(prism_along_v(profile, miny - margin, maxy + margin))
+        solid_grown = frame.place(prism_along_v(grown, miny - margin, maxy + margin))
 
-        whole = union([mesh_a, mesh_b])
-        out_a = intersection([whole, frame.place(solid)])
-        out_b = difference([whole, frame.place(solid_grown)])
+        # Bara materialet närmast skarven får byta ägare. Utan det bandet
+        # skulle "allt utom vågen" ta med sig delar av grannen som ligger
+        # utanför kontaktytan - en del kunde svälja hela sin granne.
+        band = frame.place(
+            self._band(minx, maxx, miny, maxy, amplitude + margin)
+        )
+        near = intersection([union([mesh_a, mesh_b]), band])
+        out_a = union([difference([mesh_a, band]), intersection([near, solid])])
+        out_b = union([difference([mesh_b, band]), difference([near, solid_grown])])
         return out_a, out_b
+
+    @staticmethod
+    def _band(u_min, u_max, v_min, v_max, half_depth: float) -> trimesh.Trimesh:
+        """Skivan kring snittplanet där vågen får flytta material."""
+        pad = 2.0
+        box = trimesh.creation.box(
+            extents=[
+                float(u_max - u_min) + 2 * pad,
+                float(v_max - v_min) + 2 * pad,
+                float(2 * half_depth),
+            ]
+        )
+        box.apply_translation(
+            [float(u_min + u_max) / 2.0, float(v_min + v_max) / 2.0, 0.0]
+        )
+        return _clean(box)

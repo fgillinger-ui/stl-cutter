@@ -177,6 +177,7 @@ Poängen är ett **straff** — lägre är bättre — och vikterna ligger i
 | Vikt | Standard | Straffas när |
 |------|----------|--------------|
 | `part_count` | 1000 | kandidaten är omöjlig (tomt snitt) |
+| `joint_room` | 15 | en skiva kommer närmare byggvolymens gräns än `joint_room_mm` (12 mm) — då finns ingen plats kvar för fogens nyckel att sticka ut |
 | `thin_wall` | 25 | `min_wall_mm` under 4 mm, linjärt mot underskottet |
 | `contours` | 8 | per ö utöver den första |
 | `area` | 10 | arean under 200 mm² eller över 20 000 mm², logaritmiskt |
@@ -244,7 +245,7 @@ systemet så att `u` följer kontaktytans långa riktning.
 |--------|--------------|
 | `pins` | Cylindrar med fasad topp, placerade på `region.buffer(-(marginal + radie))` så att 3 mm hålls till kanten. Hålet får `clearance` i radie och 0,3 mm extra djup så pinnen bottnar mot luft. |
 | `dovetail` | Trapetsprisma, bredare vid `depth` än vid halsen (8° flare) — låser mot dragkraft. 1–3 st fördelade längs `u`, var och en extruderad längs `v` (glidriktningen) med 0,4 mm fas i båda ändarna. Byggs som konvext hölje av tvärsnitt på flera nivåer, vilket inte kan ge en trasig mesh. Honan öppnas mot sidorna (`region.buffer(2)`) så att laxstjärten går att skjuta in. |
-| `puzzle` | Följer inte den generella metoden. En profil i (u, n)-planet — `sine` eller `keyhole` med undersnitt — extruderas genom hela tjockleken och **ersätter** det plana snittet: `A = (A ∪ B) ∩ prismat`, `B = (A ∪ B) − prismat.buffer(clearance)`. |
+| `puzzle` | Följer inte den generella metoden. En profil i (u, n)-planet — `sine` eller `keyhole` med undersnitt — extruderas genom hela tjockleken och **ersätter** det plana snittet. Omfördelningen sker bara inuti ett *band* kring snittplanet: `A = (A − band) ∪ ((A ∪ B) ∩ band ∩ prismat)` och motsvarande för B. Utan bandet kunde `allt utom vågen` ta med sig material som ligger utanför kontaktytan, och en del svälja hela sin granne. |
 | `screw` | Följer inte heller den generella metoden: material tas bort ur båda delarna. Genomgående Ø3,4 mm-hål och Ø6×3 mm försänkning i A; sexkantsficka (nyckelvidd 5,5 mm) vid snittytan och hål för skruvspetsen i B. Muttern läggs i fickan före montering. Två styrpinnar varvas med skruvarna längs `u`. |
 
 **Begränsningar mot materialet** — `build()` mäter hur långt varje del sträcker
@@ -270,6 +271,12 @@ marginalen av de två delarna — vilken som får nyckeln avgörs först under b
 Alla fogtyper, inklusive de kompletterande styrpinnarna, lyder under taket.
 Finns mindre än `MIN_USEFUL_PROTRUSION_MM` (2 mm) att växa på byggs ingen fog,
 och användaren får veta att marginalen i skrivarprofilen behöver ökas.
+
+**Städning som inte förstör** — `_clean()` kör `merge_vertices()` och kastar
+degenererade trianglar efter varje boolean. `nondegenerate_faces()` kan dock
+öppna hål i en mesh som redan var hel, och då avvisar `manifold3d` den i nästa
+steg — fogen misslyckas trots att geometrin var i ordning. Städningen kastas
+därför om den gör en hel mesh trasig.
 
 **Robusthetskedja** — `joints.build_joint()` kontrollerar efter varje boolean att
 resultatet är watertight, har konsekventa normaler och att den sammanlagda
