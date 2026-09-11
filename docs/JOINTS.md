@@ -21,6 +21,7 @@ Samma bilder finns i det grafiska gränssnittet under knappen
 | `none` | tjockleken är under 4 mm | nej | – (ytorna limmas) |
 | `puzzle` | 4–8 mm och platt snitt | nej | 0,15 mm |
 | `dovetail` | minst 8 mm och avlångt snitt | motvilligt | 0,15–0,20 mm |
+| `dovetail` + stoppkant | samma, men delen ska ta emot i botten | nej | 0,15–0,20 mm |
 | `pins` | minst 6 mm, gärna rundaktigt snitt | ja, men utan låsning | 0,10–0,15 mm |
 | `screw` | minst 12 mm och du valt "ska kunna tas isär" | ja | 0,15 mm |
 
@@ -93,6 +94,20 @@ för passning, eftersom kontaktytan är sned.
 **Tänk på:** skriv ut delarna så att laxstjärten inte hamnar i en riktning där
 lagerlinjerna gör den svag. Ett spår som byggs liggande tål mer än ett som byggs
 stående.
+
+### Stoppkant i botten
+
+![dovetail-stop](../assets/joints/dovetail-stop.svg)
+
+Som standard går spåret rakt igenom: du skjuter in laxstjärten och den stannar
+där friktionen tar. Kryssar du i **Stoppkant** i programmet stängs spårets bortre
+ände, och laxstjärten görs lika mycket kortare. Då glider delen in och **tar emot
+mot material** i stället för att bara hållas på plats av friktion.
+
+Använd den när du vill att delarna ska hamna exakt rätt utan att du behöver mäta,
+eller när fogen ska bära last i inskjutningsriktningen. Standardhöjden är 6 mm;
+den kan aldrig ta mer än 40 % av inskjutningslängden, för då skulle fogen inte gå
+att montera.
 
 ---
 

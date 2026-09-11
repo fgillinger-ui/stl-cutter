@@ -88,6 +88,15 @@ och en 3D-vy till höger.
      följer med medan du ändrar värdet.
    * **Fogtyp** — välj fritt, oavsett vad programmet föreslog
 
+   Under tabellen finns två inställningar för det markerade snittet:
+
+   * **Lutning** — vinkla snittet ett exakt antal grader kring en vald axel.
+     0 betyder rakt. Samma sak går att göra på fri hand med Shift och dra i
+     planet.
+   * **Stoppkant** — bara för laxstjärt. Stänger botten på spåret så att delen
+     glider in och tar emot mot material i stället för att bara hållas av
+     friktion. Se [docs/JOINTS.md](docs/JOINTS.md) för en bild.
+
    **Eller ta tag i snittet direkt i 3D-vyn:**
 
    | Gör så här | Vad som händer |

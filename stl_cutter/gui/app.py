@@ -77,6 +77,12 @@ MAX_EXPLODE_MM = 200
 #: Bredd på bilden bredvid motiveringen.
 JOINT_THUMBNAIL_WIDTH = 180
 
+#: Största lutning som går att ställa in i tabellen.
+MAX_TILT_DEG = 60.0
+
+#: Stoppkantens standardhöjd när den slås på.
+DEFAULT_STOP_MM = 6.0
+
 #: Hur långt delarna sprängs isär automatiskt vid förhandsgranskning.
 DEFAULT_PREVIEW_EXPLODE_MM = 40
 
@@ -287,6 +293,42 @@ class MainWindow(QMainWindow):
         self.motivation_label.setStyleSheet("color: #444; padding: 4px;")
         details.addWidget(self.motivation_label, 1)
         layout.addLayout(details)
+
+        # Exakta inställningar för det markerade snittet.
+        settings_row = QHBoxLayout()
+        settings_row.addWidget(QLabel("Lutning:"))
+        self.tilt_spin = self._spin(-MAX_TILT_DEG, MAX_TILT_DEG, "°", decimals=1, step=1.0)
+        self.tilt_spin.setToolTip(
+            "Vinkla snittet. 0 = rakt. Går också att göra med Shift och dra i planet."
+        )
+        self.tilt_spin.setEnabled(False)
+        self.tilt_spin.valueChanged.connect(self._on_tilt_changed)
+        settings_row.addWidget(self.tilt_spin)
+
+        settings_row.addWidget(QLabel("kring"))
+        self.tilt_axis_combo = QComboBox()
+        self.tilt_axis_combo.setToolTip("Vilken axel snittet lutas kring")
+        self.tilt_axis_combo.setEnabled(False)
+        self.tilt_axis_combo.currentIndexChanged.connect(self._on_tilt_changed)
+        settings_row.addWidget(self.tilt_axis_combo)
+
+        settings_row.addSpacing(12)
+        self.stop_check = QCheckBox("Stoppkant")
+        self.stop_check.setToolTip(
+            "Stäng botten på laxstjärtsspåret, så att delen glider in och tar emot "
+            "mot material i stället för att bara hållas av friktion."
+        )
+        self.stop_check.setEnabled(False)
+        self.stop_check.stateChanged.connect(self._on_stop_changed)
+        settings_row.addWidget(self.stop_check)
+
+        self.stop_spin = self._spin(1.0, 50.0, " mm", decimals=1, step=1.0)
+        self.stop_spin.setValue(DEFAULT_STOP_MM)
+        self.stop_spin.setEnabled(False)
+        self.stop_spin.valueChanged.connect(self._on_stop_changed)
+        settings_row.addWidget(self.stop_spin)
+        settings_row.addStretch(1)
+        layout.addLayout(settings_row)
 
         self.joint_help_button = QPushButton("Fogtyper - vad är vad?")
         self.joint_help_button.clicked.connect(self.show_joint_help)
@@ -1032,6 +1074,83 @@ class MainWindow(QMainWindow):
             f"<b>Snitt {cut.index}:</b>{tilt} {cut.recommendation.motivation}{alternatives}"
         )
         self._show_joint_image(cut.recommendation.joint_type)
+        self._update_cut_controls(cut)
+
+    def _update_cut_controls(self, cut) -> None:
+        """Fyll lutning och stoppkant med det markerade snittets värden."""
+        self._filling = True
+        try:
+            self.tilt_spin.setEnabled(True)
+            self.tilt_axis_combo.setEnabled(True)
+            self.tilt_spin.setValue(cut.plane.tilt_deg)
+
+            # Man lutar kring de två axlar som inte är snittets egen.
+            self.tilt_axis_combo.clear()
+            for axis in range(3):
+                if axis != cut.plane.axis:
+                    self.tilt_axis_combo.addItem(f"{AXIS_NAMES[axis]}-axeln", axis)
+
+            joint_type = cut.recommendation.joint_type if cut.recommendation else "none"
+            is_dovetail = joint_type == "dovetail"
+            stop = float((cut.recommendation.params or {}).get("stop_mm", 0.0)) if cut.recommendation else 0.0
+            self.stop_check.setEnabled(is_dovetail)
+            self.stop_check.setChecked(is_dovetail and stop > 0)
+            self.stop_spin.setEnabled(is_dovetail and stop > 0)
+            if stop > 0:
+                self.stop_spin.setValue(stop)
+            self.stop_check.setToolTip(
+                "Stäng botten på laxstjärtsspåret, så att delen glider in och tar "
+                "emot mot material i stället för att bara hållas av friktion."
+                if is_dovetail
+                else "Gäller bara laxstjärt."
+            )
+        finally:
+            self._filling = False
+
+    def _on_tilt_changed(self, *_args) -> None:
+        """Sätt lutningen exakt i grader."""
+        row = self.cut_table.currentRow()
+        if self._filling or self.plan is None or not (0 <= row < len(self.plan.cuts)):
+            return
+        cut = self.plan.cuts[row]
+        around = self.tilt_axis_combo.currentData()
+        if around is None:
+            return
+
+        base = np.zeros(3)
+        base[cut.plane.axis] = 1.0
+        direction = np.zeros(3)
+        direction[int(around)] = 1.0
+        rotation = trimesh.transformations.rotation_matrix(
+            np.radians(self.tilt_spin.value()), direction
+        )
+        normal = rotation[:3, :3] @ base
+
+        cuts = list(self.plan.cuts)
+        cuts[row] = self._analysed_cut(
+            cut.plane.axis, cut.plane.position, cut.index, normal=tuple(normal)
+        )
+        self._rebuild_plan(cuts, select=cuts[row])
+
+    def _on_stop_changed(self, *_args) -> None:
+        """Slå på eller av stoppkanten i laxstjärtens botten."""
+        row = self.cut_table.currentRow()
+        if self._filling or self.plan is None or not (0 <= row < len(self.plan.cuts)):
+            return
+        cut = self.plan.cuts[row]
+        if cut.recommendation is None:
+            return
+
+        enabled = self.stop_check.isChecked()
+        self.stop_spin.setEnabled(enabled)
+        stop = self.stop_spin.value() if enabled else 0.0
+        cut.recommendation.params = {**(cut.recommendation.params or {}), "stop_mm": stop}
+        self.result = None
+        self.status(
+            f"Snitt {cut.index}: stoppkant {stop:.1f} mm i laxstjärtens botten."
+            if enabled
+            else f"Snitt {cut.index}: laxstjärtsspåret går igenom."
+        )
 
     def _show_joint_image(self, joint_type: str) -> None:
         """Bild på den valda fogtypen, om den finns."""
@@ -1063,6 +1182,7 @@ class MainWindow(QMainWindow):
             clearance_mm=self.clearance.value(),
         )
         cut.recommendation = recommendation
+        self._update_cut_controls(cut)
         item = QTableWidgetItem(recommendation.motivation)
         item.setToolTip(recommendation.motivation)
         self.cut_table.setItem(row, COLUMN_MOTIVATION, item)

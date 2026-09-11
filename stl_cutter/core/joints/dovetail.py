@@ -34,6 +34,12 @@ MIN_WIDTH_MM = 4.0
 #: Under den här tjockleken på snittet är en laxstjärt meningslös.
 MIN_THICKNESS_MM = 6.0
 
+#: Stoppkanten får ta högst så här stor del av inskjutningslängden.
+MAX_STOP_FRACTION = 0.4
+
+#: Kortare än så här går laxstjärten inte att skjuta in.
+MIN_SLIDE_LENGTH_MM = 4.0
+
 
 def _trapezoid(centre_u: float, width: float, depth: float, angle_deg: float) -> Polygon:
     """Laxstjärtens tvärsnitt i (u, n)-planet. Bredare vid n = depth."""
@@ -108,6 +114,21 @@ class DovetailJoint(JointBuilder):
         if clip is None:
             raise JointError("Kontaktytan gick inte att tolka.")
 
+        # Stoppkant: spåret stängs i bortre änden, och laxstjärten görs lika
+        # mycket kortare. Då glider den in och tar emot mot material i stället
+        # för att bara hållas på plats av friktion.
+        stop = min(max(params.stop_mm, 0.0), MAX_STOP_FRACTION * v_span)
+        v_start = miny + offset[1]
+        v_end = maxy + offset[1] - stop
+        if grow > 0:
+            # Honan öppnas bara i den ände laxstjärten skjuts in från.
+            v_start -= OVERLAP_MM
+            v_end += grow
+        if v_end - v_start < MIN_SLIDE_LENGTH_MM:
+            raise JointError(
+                f"Bara {max(v_end - v_start, 0.0):.1f} mm att skjuta in laxstjärten på."
+            )
+
         solids = []
         for i in range(count):
             centre_u = minx + u_span * (i + 1) / (count + 1) + offset[0]
@@ -115,7 +136,11 @@ class DovetailJoint(JointBuilder):
             if grow > 0:
                 profile = profile.buffer(grow, join_style=2)
             solid = self._prism_along_v(
-                profile, miny + offset[1], maxy + offset[1], chamfer if grow == 0 else 0.0
+                profile,
+                v_start,
+                v_end,
+                chamfer if grow == 0 else 0.0,
+                chamfer_both_ends=stop <= 0.0,
             )
             solid = intersection([solid, prism_from_polygon(clip, -OVERLAP_MM, depth + 1.0)])
             solids.append(solid)
@@ -123,12 +148,17 @@ class DovetailJoint(JointBuilder):
 
     @staticmethod
     def _prism_along_v(
-        profile: Polygon, v_min: float, v_max: float, chamfer: float
+        profile: Polygon,
+        v_min: float,
+        v_max: float,
+        chamfer: float,
+        chamfer_both_ends: bool = True,
     ) -> "np.ndarray":
-        """Extrudera tvärsnittet längs v, med fas i båda ändarna.
+        """Extrudera tvärsnittet längs v, med fas i ingångsänden.
 
         Tvärsnittet är konvext, så prismat byggs som ett konvext hölje av
-        nivåerna - det kan inte bli en trasig mesh.
+        nivåerna - det kan inte bli en trasig mesh. Med en stoppkant fasas bara
+        den ände laxstjärten skjuts in från; den bortre ska ta emot plant.
         """
         import trimesh
 
@@ -142,8 +172,11 @@ class DovetailJoint(JointBuilder):
             else:
                 levels.append((inset, v_min))
                 levels.append((profile, v_min + chamfer))
-                levels.append((profile, v_max - chamfer))
-                levels.append((inset, v_max))
+                if chamfer_both_ends:
+                    levels.append((profile, v_max - chamfer))
+                    levels.append((inset, v_max))
+                else:
+                    levels.append((profile, v_max))
         if not levels:
             levels = [(profile, v_min), (profile, v_max)]
 
