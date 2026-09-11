@@ -12,6 +12,9 @@ import logging
 import numpy as np
 import pyqtgraph.opengl as gl
 import trimesh
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QAction
+from PySide6.QtWidgets import QMenu
 
 log = logging.getLogger(__name__)
 
@@ -27,6 +30,26 @@ BED_COLOR_ON_LIGHT = (0.30, 0.34, 0.40, 0.7)
 
 #: Hur långt planen ritas utanför modellen, som andel av modellens storlek.
 PLANE_MARGIN = 0.08
+
+#: Färdiga kameravinklar: (azimut, elevation) i grader.
+STANDARD_VIEWS = {
+    "Snett framifrån": (-60.0, 30.0),
+    "Framifrån": (-90.0, 0.0),
+    "Bakifrån": (90.0, 0.0),
+    "Från vänster": (180.0, 0.0),
+    "Från höger": (0.0, 0.0),
+    "Ovanifrån": (-90.0, 89.9),
+    "Underifrån": (-90.0, -89.9),
+}
+
+#: Rör sig musen mindre än så här räknas det som ett klick, inte ett drag.
+CLICK_SLOP_PX = 4
+
+MOUSE_HELP = (
+    "Dra med vänster eller höger musknapp för att vrida modellen.\n"
+    "Mittenknapp eller Ctrl+dra flyttar vyn i sidled.\n"
+    "Mushjulet zoomar. Högerklicka för färdiga vinklar."
+)
 
 
 def part_colors(count: int) -> list[tuple[float, float, float, float]]:
@@ -109,7 +132,9 @@ class ModelView(gl.GLViewWidget):
         self._bed_item = None
         self._printer = None
         self._explode_mm = 0.0
+        self._press_pos = None
         self.opts["distance"] = 600
+        self.setToolTip(MOUSE_HELP)
 
     @property
     def model_color(self):
@@ -235,6 +260,97 @@ class ModelView(gl.GLViewWidget):
         grid.setColor(tuple(int(c * 255) for c in self.bed_color))
         self._bed_item = grid
         self.addItem(grid)
+
+    # -- mus och kameravinklar --------------------------------------------
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt-namn
+        self._press_pos = event.position() if hasattr(event, "position") else event.localPos()
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802 - Qt-namn
+        """Höger musknapp vrider modellen, precis som vänster.
+
+        pyqtgraph använder bara vänster knapp till att rotera; många väntar sig
+        att kunna dra med höger. Ctrl gör att dragningen flyttar vyn i stället.
+        """
+        if event.buttons() & Qt.RightButton:
+            position = (
+                event.position() if hasattr(event, "position") else event.localPos()
+            )
+            if not hasattr(self, "mousePos"):
+                self.mousePos = position
+            diff = position - self.mousePos
+            self.mousePos = position
+            if event.modifiers() & Qt.ControlModifier:
+                self.pan(diff.x(), diff.y(), 0, relative="view")
+            else:
+                self.orbit(-diff.x(), diff.y())
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802 - Qt-namn
+        """Ett högerklick utan dragning öppnar menyn med färdiga vinklar."""
+        if event.button() == Qt.RightButton and not self._was_dragged(event):
+            self.show_view_menu(event.globalPosition().toPoint())
+            return
+        super().mouseReleaseEvent(event)
+
+    def _was_dragged(self, event) -> bool:
+        if self._press_pos is None:
+            return False
+        position = event.position() if hasattr(event, "position") else event.localPos()
+        moved = position - self._press_pos
+        return abs(moved.x()) > CLICK_SLOP_PX or abs(moved.y()) > CLICK_SLOP_PX
+
+    def build_view_menu(self) -> QMenu:
+        """Menyn med färdiga kameravinklar."""
+        menu = QMenu(self)
+        for name, (azimuth, elevation) in STANDARD_VIEWS.items():
+            action = QAction(name, menu)
+            action.triggered.connect(
+                lambda _checked=False, a=azimuth, e=elevation: self.set_view(a, e)
+            )
+            menu.addAction(action)
+        menu.addSeparator()
+        fit = QAction("Anpassa till modellen", menu)
+        fit.triggered.connect(self.fit_view)
+        menu.addAction(fit)
+        return menu
+
+    def show_view_menu(self, global_position) -> None:
+        self.build_view_menu().exec(global_position)
+
+    def set_view(self, azimuth: float, elevation: float) -> None:
+        """Ställ kameran i en given vinkel och behåll avståndet."""
+        self.setCameraPosition(azimuth=float(azimuth), elevation=float(elevation))
+        self.update()
+
+    def content_bounds(self) -> np.ndarray | None:
+        """Bounding box för det som visas just nu."""
+        meshes = [item for item in (self._part_items or []) if item is not None]
+        if not meshes and self._model_item is not None:
+            meshes = [self._model_item]
+        if not meshes:
+            return None
+        corners = []
+        for item in meshes:
+            data = item.opts.get("meshdata")
+            if data is None:
+                continue
+            vertices = np.asarray(data.vertexes(), dtype=float)
+            transform = np.asarray(item.transform().data(), dtype=float).reshape(4, 4).T
+            moved = trimesh.transform_points(vertices, transform)
+            corners.append([moved.min(axis=0), moved.max(axis=0)])
+        if not corners:
+            return None
+        corners = np.array(corners)
+        return np.array([corners[:, 0].min(axis=0), corners[:, 1].max(axis=0)])
+
+    def fit_view(self) -> None:
+        """Zooma så att allt som visas får plats i rutan."""
+        bounds = self.content_bounds()
+        if bounds is not None:
+            self.frame_on(bounds)
 
     # -- allt -------------------------------------------------------------
 

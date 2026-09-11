@@ -699,3 +699,174 @@ def test_the_gui_survives_missing_joint_images(qapp, window, model_file, monkeyp
 
     assert window.joint_image.isHidden()
     assert window.cut_table.rowCount() > 0
+
+
+# --------------------------------------------------------------------------
+# Att vrida på modellen med musen
+# --------------------------------------------------------------------------
+
+
+def _mouse_event(kind, button, x, y, buttons=None):
+    from PySide6.QtCore import QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+
+    held = buttons if buttons is not None else button
+    return QMouseEvent(
+        kind, QPointF(x, y), QPointF(x, y), button, held, Qt.NoModifier
+    )
+
+
+def _drag(view, button, path):
+    """Tryck ner, dra längs `path` och släpp."""
+    from PySide6.QtCore import QEvent, Qt
+
+    start = path[0]
+    view.mousePressEvent(_mouse_event(QEvent.MouseButtonPress, button, *start))
+    for point in path[1:]:
+        view.mouseMoveEvent(
+            _mouse_event(QEvent.MouseMove, Qt.NoButton, *point, buttons=button)
+        )
+    view.mouseReleaseEvent(_mouse_event(QEvent.MouseButtonRelease, button, *path[-1]))
+
+
+def test_right_drag_rotates_the_model(qapp, window, model_file):
+    """Det användaren bad om: dra med höger musknapp för att se runt modellen."""
+    from PySide6.QtCore import Qt
+
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+    view = window.view
+    before = (view.opts["azimuth"], view.opts["elevation"])
+
+    _drag(view, Qt.RightButton, [(100, 100), (140, 100), (180, 130)])
+
+    after = (view.opts["azimuth"], view.opts["elevation"])
+    assert after != before, "höger musknapp ska vrida kameran"
+    assert after[0] != before[0], "vridningen i sidled saknas"
+    assert after[1] != before[1], "vridningen i höjdled saknas"
+
+
+def test_left_drag_still_rotates(qapp, window, model_file):
+    from PySide6.QtCore import Qt
+
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+    view = window.view
+    before = view.opts["azimuth"]
+
+    _drag(view, Qt.LeftButton, [(100, 100), (150, 100)])
+
+    assert view.opts["azimuth"] != before
+
+
+def test_right_drag_with_ctrl_pans_instead(qapp, window, model_file):
+    from PySide6.QtCore import QEvent, QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+    view = window.view
+    angle_before = view.opts["azimuth"]
+    centre_before = tuple(view.opts["center"])
+
+    view.mousePressEvent(_mouse_event(QEvent.MouseButtonPress, Qt.RightButton, 100, 100))
+    view.mouseMoveEvent(
+        QMouseEvent(
+            QEvent.MouseMove,
+            QPointF(160, 140),
+            QPointF(160, 140),
+            Qt.NoButton,
+            Qt.RightButton,
+            Qt.ControlModifier,
+        )
+    )
+
+    assert view.opts["azimuth"] == angle_before, "Ctrl ska flytta vyn, inte vrida"
+    assert tuple(view.opts["center"]) != centre_before
+
+
+def test_right_click_without_dragging_opens_the_view_menu(qapp, window, model_file):
+    from PySide6.QtCore import QEvent, Qt
+
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+    view = window.view
+    opened = []
+    view.show_view_menu = lambda position: opened.append(position)
+
+    view.mousePressEvent(_mouse_event(QEvent.MouseButtonPress, Qt.RightButton, 100, 100))
+    view.mouseReleaseEvent(
+        _mouse_event(QEvent.MouseButtonRelease, Qt.RightButton, 101, 102)
+    )
+
+    assert opened, "ett högerklick utan dragning ska öppna menyn"
+
+
+def test_right_drag_does_not_open_the_menu(qapp, window, model_file):
+    from PySide6.QtCore import Qt
+
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+    view = window.view
+    opened = []
+    view.show_view_menu = lambda position: opened.append(position)
+
+    _drag(view, Qt.RightButton, [(100, 100), (200, 160)])
+
+    assert not opened, "en dragning ska vrida, inte öppna meny"
+
+
+def test_the_view_menu_offers_every_standard_angle(qapp, window):
+    from stl_cutter.gui.view3d import STANDARD_VIEWS
+
+    menu = window.view.build_view_menu()
+    labels = [action.text() for action in menu.actions() if action.text()]
+
+    for name in STANDARD_VIEWS:
+        assert name in labels
+    assert "Anpassa till modellen" in labels
+
+
+@pytest.mark.parametrize("name", ["Ovanifrån", "Framifrån", "Från höger"])
+def test_standard_views_set_the_camera(qapp, window, name):
+    from stl_cutter.gui.view3d import STANDARD_VIEWS
+
+    azimuth, elevation = STANDARD_VIEWS[name]
+    window.view.set_view(azimuth, elevation)
+
+    assert window.view.opts["azimuth"] == pytest.approx(azimuth)
+    assert window.view.opts["elevation"] == pytest.approx(elevation)
+
+
+def test_fit_view_zooms_to_the_model(qapp, window, model_file):
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+    fitted = window.view.opts["distance"]
+
+    window.view.opts["distance"] = 99999
+    window.view.fit_view()
+
+    assert window.view.opts["distance"] == pytest.approx(fitted)
+
+
+def test_fit_view_follows_the_parts_after_cutting(qapp, window, model_file, tmp_path):
+    window.settings.last_output_dir = str(tmp_path / "ut")
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+    window.start_analysis()
+    wait_for_worker(qapp, window)
+    window.start_cut()
+    wait_for_worker(qapp, window)
+
+    window.explode_slider.setValue(80)
+    bounds = window.view.content_bounds()
+
+    assert bounds is not None
+    # Sprängda delar täcker mer än originalet gjorde.
+    assert float(bounds[1][0] - bounds[0][0]) > 600.0
+
+
+def test_fit_view_is_harmless_with_an_empty_scene(qapp, window):
+    window.view.fit_view()
+
+    assert window.view.content_bounds() is None
