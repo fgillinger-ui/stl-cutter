@@ -12,6 +12,7 @@ from functools import partial
 from pathlib import Path
 
 import numpy as np
+import trimesh
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
@@ -42,7 +43,14 @@ from PySide6.QtWidgets import (
 
 from ..core import exporter, mesh_io
 from ..core.cutter import cut_mesh, parts_fit
-from ..core.planner import AXIS_NAMES, make_cut, oriented_mesh, plan_from_cuts, plan_splits
+from ..core.planner import (
+    AXIS_NAMES,
+    dominant_axis,
+    make_cut,
+    oriented_mesh,
+    plan_from_cuts,
+    plan_splits,
+)
 from ..core.printers import PrinterProfile, get_printer, load_printers, save_profile
 from ..core.recommender import JOINT_TYPES, build_recommendation
 from . import joint_images
@@ -68,6 +76,12 @@ MAX_EXPLODE_MM = 200
 
 #: Bredd på bilden bredvid motiveringen.
 JOINT_THUMBNAIL_WIDTH = 180
+
+#: Hur långt delarna sprängs isär automatiskt vid förhandsgranskning.
+DEFAULT_PREVIEW_EXPLODE_MM = 40
+
+#: Hur mycket ett plan vinklas per pixel vid Shift+dragning.
+TILT_DEGREES_PER_PIXEL = 0.35
 
 #: Kolumner i snittabellen.
 COLUMN_INDEX, COLUMN_AXIS, COLUMN_POSITION, COLUMN_JOINT, COLUMN_MOTIVATION = range(5)
@@ -237,6 +251,12 @@ class MainWindow(QMainWindow):
         self.remove_cut_button.clicked.connect(self.remove_cut)
         buttons.addWidget(self.remove_cut_button)
 
+        self.straighten_button = QPushButton("Räta upp")
+        self.straighten_button.setEnabled(False)
+        self.straighten_button.setToolTip("Ta bort lutningen på det markerade snittet")
+        self.straighten_button.clicked.connect(self.straighten_cut)
+        buttons.addWidget(self.straighten_button)
+
         self.reset_cuts_button = QPushButton("Räkna ut åt mig")
         self.reset_cuts_button.setEnabled(False)
         self.reset_cuts_button.setToolTip(
@@ -286,7 +306,15 @@ class MainWindow(QMainWindow):
         row.addWidget(choose)
         layout.addLayout(row)
 
-        self.cut_button = QPushButton("Kapa modellen")
+        self.preview_button = QPushButton("Förhandsgranska (kapar inte filen)")
+        self.preview_button.setEnabled(False)
+        self.preview_button.setToolTip(
+            "Kapa modellen i minnet och visa delarna i sprängskiss - inga filer skrivs"
+        )
+        self.preview_button.clicked.connect(self.start_preview)
+        layout.addWidget(self.preview_button)
+
+        self.cut_button = QPushButton("Kapa och exportera")
         self.cut_button.setEnabled(False)
         self.cut_button.clicked.connect(self.start_cut)
         layout.addWidget(self.cut_button)
@@ -297,6 +325,9 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(container)
 
         self.view = ModelView(light_background=self.settings.light_background)
+        self.view.plane_dragged.connect(self._on_plane_dragged)
+        self.view.plane_tilted.connect(self._on_plane_tilted)
+        self.view.plane_released.connect(self._on_plane_released)
         layout.addWidget(self.view, 1)
 
         controls = QHBoxLayout()
@@ -532,9 +563,11 @@ class MainWindow(QMainWindow):
         self.result = None
         self.cut_table.setRowCount(0)
         self.cut_button.setEnabled(False)
+        self.preview_button.setEnabled(False)
         self.analyse_button.setEnabled(True)
         self.add_cut_button.setEnabled(True)
         self.remove_cut_button.setEnabled(True)
+        self.straighten_button.setEnabled(True)
         self.reset_cuts_button.setEnabled(True)
         self.plan_summary.setText("")
 
@@ -620,6 +653,7 @@ class MainWindow(QMainWindow):
         if not plan.needs_cutting:
             self.status("Modellen får plats som den är - ingen kapning behövs.")
         self.reset_cuts_button.setEnabled(True)
+        self.preview_button.setEnabled(bool(plan.cuts))
         self._fill_table(plan)
         # Visa modellen i planens koordinatsystem - annars stämmer inte
         # snittplanen med modellen när den roterats automatiskt.
@@ -731,6 +765,7 @@ class MainWindow(QMainWindow):
         )
         self.result = None
         self.cut_button.setEnabled(bool(self.plan.cuts))
+        self.preview_button.setEnabled(bool(self.plan.cuts))
         self._fill_table(self.plan)
         self._refresh_planes()
 
@@ -748,7 +783,7 @@ class MainWindow(QMainWindow):
         self.view.show_planes(self.plan.planes, self.plan.bounds)
         self.on_bed_toggled()
 
-    def _analysed_cut(self, axis: int, position: float, index: int):
+    def _analysed_cut(self, axis: int, position: float, index: int, normal=None):
         return make_cut(
             oriented_mesh(self.mesh_info.mesh, self.plan),
             axis,
@@ -757,6 +792,7 @@ class MainWindow(QMainWindow):
             printer=self.current_printer(),
             assembly_intent=self.current_intent(),
             bounds=self.plan.bounds,
+            normal=normal,
         )
 
     def add_cut(self) -> None:
@@ -828,6 +864,97 @@ class MainWindow(QMainWindow):
         cuts[row] = self._analysed_cut(cut.plane.axis, widget.value(), cut.index)
         self._rebuild_plan(cuts, select=cuts[row])
 
+    # -- dra planet direkt i 3D-vyn ---------------------------------------
+
+    def _on_plane_dragged(self, number: int, distance_mm: float) -> None:
+        """Användaren drar i ett plan: flytta det längs sin egen normal."""
+        if self.plan is None or not (0 <= number < len(self.plan.cuts)):
+            return
+        cut = self.plan.cuts[number]
+        plane = cut.plane
+        origin = np.asarray(plane.origin, dtype=float) + plane.unit_normal * distance_mm
+        origin = np.clip(origin, self.plan.bounds[0] + 0.1, self.plan.bounds[1] - 0.1)
+        cut.plane = type(plane)(
+            origin=tuple(float(v) for v in origin), normal=plane.normal, axis=plane.axis
+        )
+        self._sync_row_position(number)
+        self.view.show_planes(self.plan.planes, self.plan.bounds)
+        self._update_summary()
+
+    def _on_plane_tilted(self, number: int, dx: float, dy: float) -> None:
+        """Shift+dra: vinkla planet kring vyns egna axlar."""
+        if self.plan is None or not (0 <= number < len(self.plan.cuts)):
+            return
+        cut = self.plan.cuts[number]
+        plane = cut.plane
+
+        view = self.view.viewMatrix()
+        matrix = np.array(view.data(), dtype=float).reshape(4, 4).T
+        right, up = matrix[0, :3], matrix[1, :3]
+
+        normal = plane.unit_normal
+        for axis, degrees in ((up, -dx * TILT_DEGREES_PER_PIXEL), (right, -dy * TILT_DEGREES_PER_PIXEL)):
+            if abs(degrees) < 1e-9:
+                continue
+            rotation = trimesh.transformations.rotation_matrix(np.radians(degrees), axis)
+            normal = rotation[:3, :3] @ normal
+
+        length = float(np.linalg.norm(normal))
+        if length < 1e-9:
+            return
+        normal = normal / length
+        cut.plane = type(plane)(
+            origin=plane.origin,
+            normal=tuple(float(v) for v in normal),
+            axis=int(dominant_axis(normal)),
+        )
+        self._sync_row_position(number)
+        self.view.show_planes(self.plan.planes, self.plan.bounds)
+        self._update_summary()
+
+    def _on_plane_released(self, number: int) -> None:
+        """Dragningen är klar - analysera om snittet på sin nya plats."""
+        if self.plan is None or not (0 <= number < len(self.plan.cuts)):
+            return
+        cut = self.plan.cuts[number]
+        cuts = list(self.plan.cuts)
+        cuts[number] = self._analysed_cut(
+            cut.plane.axis, cut.plane.position, cut.index, normal=cut.plane.normal
+        )
+        cuts[number].plane = cut.plane
+        self._rebuild_plan(cuts, select=cuts[number])
+
+    def _sync_row_position(self, number: int) -> None:
+        """Håll tabellen i takt med planet medan det dras."""
+        if not (0 <= number < self.cut_table.rowCount()):
+            return
+        cut = self.plan.cuts[number]
+        self._filling = True
+        try:
+            widget = self.cut_table.cellWidget(number, COLUMN_POSITION)
+            if widget is not None:
+                widget.setValue(cut.plane.position)
+            axis_widget = self.cut_table.cellWidget(number, COLUMN_AXIS)
+            if axis_widget is not None:
+                axis_widget.setCurrentIndex(cut.plane.axis)
+        finally:
+            self._filling = False
+
+    def straighten_cut(self) -> None:
+        """Ta bort lutningen på det markerade snittet."""
+        row = self.cut_table.currentRow()
+        if self.plan is None or not (0 <= row < len(self.plan.cuts)):
+            self.status("Markera ett snitt i tabellen först.", error=True)
+            return
+        cut = self.plan.cuts[row]
+        if cut.plane.is_axis_aligned:
+            self.status("Snittet är redan rakt.")
+            return
+        cuts = list(self.plan.cuts)
+        cuts[row] = self._analysed_cut(cut.plane.axis, cut.plane.position, cut.index)
+        self._rebuild_plan(cuts, select=cuts[row])
+        self.status(f"Rätade upp snitt {cut.index}.")
+
     def _update_summary(self) -> None:
         """Visa hur många delar planen ger och om de får plats."""
         if self.plan is None:
@@ -881,8 +1008,14 @@ class MainWindow(QMainWindow):
                 for a in cut.alternatives[1:]
             )
             alternatives = f"<br><i>Andra möjligheter: {others}</i>"
+        tilt = ""
+        if not cut.plane.is_axis_aligned:
+            tilt = (
+                f" <i>Planet lutar {cut.plane.tilt_deg:.0f}° från "
+                f"{AXIS_NAMES[cut.plane.axis]}-axeln.</i>"
+            )
         self.motivation_label.setText(
-            f"<b>Snitt {cut.index}:</b> {cut.recommendation.motivation}{alternatives}"
+            f"<b>Snitt {cut.index}:</b>{tilt} {cut.recommendation.motivation}{alternatives}"
         )
         self._show_joint_image(cut.recommendation.joint_type)
 
@@ -936,6 +1069,70 @@ class MainWindow(QMainWindow):
             self.settings.last_output_dir = path
             self.output_label.setText(path)
 
+    def start_preview(self) -> None:
+        """Kapa i minnet och visa resultatet, utan att skriva några filer."""
+        if self.plan is None or self.mesh_info is None:
+            return
+        printer = self.current_printer()
+        plan = self.plan
+        mesh = self.mesh_info.mesh
+
+        def work(progress=None):
+            return cut_mesh(mesh, plan, joints=True, printer=printer, progress=progress)
+
+        self._start(work, self._on_preview_done, "Förhandsgranskar…")
+
+    def _on_preview_done(self, result) -> None:
+        self.result = result
+        self._report_result(result)
+        self.status("Förhandsgranskning - inga filer har skrivits.")
+        self.view.show_parts(result.parts)
+        if self.explode_slider.value() == 0:
+            self.explode_slider.setValue(DEFAULT_PREVIEW_EXPLODE_MM)
+        self.on_bed_toggled()
+        self._summarise_result(result)
+
+    def _report_result(self, result) -> None:
+        """Gemensam rapportering för förhandsgranskning och kapning."""
+        self.status(f"Kapade i {len(result.parts)} delar.")
+        built = [j for j in result.joints if j.applied]
+        if result.joints:
+            self.status(f"Byggde {len(built)} av {len(result.joints)} fogar.")
+        for joint in result.joints:
+            if joint.fell_back:
+                self.status(
+                    f"Snitt {joint.cut_index}: fogen {joint.requested_type} fick inte plats, "
+                    f"använde {joint.joint_type} i stället."
+                )
+        for warning in result.warnings:
+            self.status(warning, error=not result.inherited_damage)
+        if result.inherited_damage and not result.all_watertight:
+            self.status(
+                "Delarna går oftast att skriva ut ändå - testa dem i din slicer. "
+                "Klagar den, laga originalmodellen och kapa om."
+            )
+
+    def _summarise_result(self, result) -> None:
+        """Visa de verkliga delarnas mått efter en kapning."""
+        printer = self.current_printer()
+        too_big = parts_fit(result, printer)
+        biggest = max(result.parts, key=lambda p: max(p.extents_mm))
+        x, y, z = biggest.extents_mm
+        text = (
+            f"{len(result.parts)} delar, störst {x:.0f} × {y:.0f} × {z:.0f} mm "
+            f"(byggvolym {printer.usable[0]:.0f} × {printer.usable[1]:.0f} × "
+            f"{printer.usable[2]:.0f} mm)"
+        )
+        if too_big:
+            text += f" — <b>delarna {too_big} får inte plats</b>"
+            self.plan_summary.setStyleSheet("color: #a33;")
+            self.status(
+                f"Delarna {too_big} får inte plats i byggvolymen.", error=True
+            )
+        else:
+            self.plan_summary.setStyleSheet("color: #363;")
+        self.plan_summary.setText(text)
+
     def start_cut(self) -> None:
         if self.plan is None or self.mesh_info is None:
             return
@@ -951,10 +1148,15 @@ class MainWindow(QMainWindow):
         source = self.mesh_info.path
         out_dir = Path(self.settings.last_output_dir)
 
+        ready = self.result
+
         def work(progress=None):
-            result = cut_mesh(
-                mesh, plan, joints=True, printer=printer, progress=progress
-            )
+            # Har vi redan förhandsgranskat samma plan behöver vi inte kapa igen.
+            result = ready
+            if result is None:
+                result = cut_mesh(
+                    mesh, plan, joints=True, printer=printer, progress=progress
+                )
             progress(0.97, "Skriver filer")
             export = exporter.export_parts(result, out_dir, printer, source=source)
             return result, export
@@ -965,31 +1167,8 @@ class MainWindow(QMainWindow):
         result, export = payload
         self.result = result
 
-        self.status(f"Kapade i {len(result.parts)} delar.")
-        built = [j for j in result.joints if j.applied]
-        if result.joints:
-            self.status(f"Byggde {len(built)} av {len(result.joints)} fogar.")
-        for joint in result.joints:
-            if joint.fell_back:
-                self.status(
-                    f"Snitt {joint.cut_index}: fogen {joint.requested_type} fick inte plats, "
-                    f"använde {joint.joint_type} i stället."
-                )
-        # Ärvda hål från en trasig originalmodell är inte ett fel i kapningen.
-        for warning in result.warnings:
-            self.status(warning, error=not result.inherited_damage)
-        if result.inherited_damage and not result.all_watertight:
-            self.status(
-                "Delarna går oftast att skriva ut ändå - testa dem i din slicer. "
-                "Klagar den, laga originalmodellen och kapa om."
-            )
-
-        too_big = parts_fit(result, self.current_printer())
-        if too_big:
-            self.status(
-                f"Delarna {too_big} får fortfarande inte plats i byggvolymen.", error=True
-            )
-
+        self._report_result(result)
+        self._summarise_result(result)
         self.status(f"Skrev {len(export.part_files)} filer till {export.directory}")
         self.status(f"Rapport: {export.report_file.name}")
         self.view.show_parts(result.parts)

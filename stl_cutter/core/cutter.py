@@ -303,26 +303,69 @@ def _overlap_in_plane(a: trimesh.Trimesh, b: trimesh.Trimesh, axis: int) -> floa
     return float(min(overlaps))
 
 
+def _side_of(plane, mesh: trimesh.Trimesh) -> int:
+    """Vilken sida om planet en del ligger på: -1, +1, eller 0 om den skär det.
+
+    Fungerar även för vinklade snitt, till skillnad från att jämföra
+    bounding box mot en axel.
+    """
+    distances = plane.signed_distance(mesh.vertices)
+    low, high = float(distances.min()), float(distances.max())
+    if high <= ADJACENCY_TOL_MM:
+        return -1 if low < -ADJACENCY_TOL_MM else 0
+    if low >= -ADJACENCY_TOL_MM:
+        return 1 if high > ADJACENCY_TOL_MM else 0
+    return 0
+
+
+def _touches(plane, mesh: trimesh.Trimesh) -> bool:
+    """Ligger delen an mot planet?"""
+    distances = plane.signed_distance(mesh.vertices)
+    return bool(np.min(np.abs(distances)) <= ADJACENCY_TOL_MM)
+
+
 def find_pairs(parts: list[Part], plan: SplitPlan) -> list[tuple[Part, Part, object]]:
     """Hitta delar som möts vid ett snittplan.
 
     Del A ligger under planet och får fogens nyckel, del B ligger över och får
     urtaget. Paren tas fram innan någon fog byggs, eftersom delarnas
     bounding box ändras när nycklar läggs till.
+
+    Sidorna avgörs med planets egen normal, så vinklade snitt fungerar lika
+    bra som raka.
     """
     pairs: list[tuple[Part, Part, object]] = []
     for cut in plan.cuts:
-        axis = cut.plane.axis
-        position = cut.plane.position
-        below = [p for p in parts if abs(p.mesh.bounds[1][axis] - position) <= ADJACENCY_TOL_MM]
-        above = [p for p in parts if abs(p.mesh.bounds[0][axis] - position) <= ADJACENCY_TOL_MM]
+        plane = cut.plane
+        below, above = [], []
+        for part in parts:
+            if not _touches(plane, part.mesh):
+                continue
+            side = _side_of(plane, part.mesh)
+            if side < 0:
+                below.append(part)
+            elif side > 0:
+                above.append(part)
+
         for part_a in below:
             for part_b in above:
                 if part_a is part_b:
                     continue
-                if _overlap_in_plane(part_a.mesh, part_b.mesh, axis) > MIN_OVERLAP_MM:
+                if _boxes_overlap(part_a.mesh, part_b.mesh):
                     pairs.append((part_a, part_b, cut))
     return pairs
+
+
+def _boxes_overlap(a: trimesh.Trimesh, b: trimesh.Trimesh) -> bool:
+    """Delar de två delarna någon yta att tala om?"""
+    overlaps = []
+    for axis in range(3):
+        low = max(a.bounds[0][axis], b.bounds[0][axis])
+        high = min(a.bounds[1][axis], b.bounds[1][axis])
+        overlaps.append(high - low)
+    # Två delar som möts vid ett plan överlappar knappt alls i normalriktningen,
+    # men rejält i de andra två. Kräv överlapp i minst två led.
+    return sum(1 for value in overlaps if value > MIN_OVERLAP_MM) >= 2
 
 
 def build_volume_slack(part: "Part", printer) -> float:

@@ -12,7 +12,7 @@ import logging
 import numpy as np
 import pyqtgraph.opengl as gl
 import trimesh
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import QMenu
 
@@ -45,8 +45,12 @@ STANDARD_VIEWS = {
 #: Rör sig musen mindre än så här räknas det som ett klick, inte ett drag.
 CLICK_SLOP_PX = 4
 
+#: Hur nära ett plan man måste klicka för att ta tag i det.
+PLANE_GRAB_TOLERANCE = 0.0
+
 MOUSE_HELP = (
-    "Dra med vänster eller höger musknapp för att vrida modellen.\n"
+    "Dra i ett snittplan för att flytta det. Shift+dra vinklar planet.\n"
+    "Dra vid sidan om med vänster eller höger musknapp för att vrida modellen.\n"
     "Mittenknapp eller Ctrl+dra flyttar vyn i sidled.\n"
     "Mushjulet zoomar. Högerklicka för färdiga vinklar."
 )
@@ -119,7 +123,18 @@ def mesh_data(mesh: trimesh.Trimesh) -> gl.MeshData:
 
 
 class ModelView(gl.GLViewWidget):
-    """Visar modellen, snittplanen och de färdiga delarna."""
+    """Visar modellen, snittplanen och de färdiga delarna.
+
+    Snittplanen går att ta tag i och dra direkt i vyn: en dragning flyttar
+    planet längs sin egen normal, Shift+dragning vinklar det.
+    """
+
+    #: (snittets index, förflyttning i mm längs normalen)
+    plane_dragged = Signal(int, float)
+    #: (snittets index, vridning i grader kring vyns upp- respektive högeraxel)
+    plane_tilted = Signal(int, float, float)
+    #: (snittets index) - dragningen är klar, dags att analysera om
+    plane_released = Signal(int)
 
     def __init__(self, parent=None, light_background: bool = True):
         super().__init__(parent)
@@ -133,6 +148,8 @@ class ModelView(gl.GLViewWidget):
         self._printer = None
         self._explode_mm = 0.0
         self._press_pos = None
+        self._planes: list = []
+        self._drag = None
         self.opts["distance"] = 600
         self.setToolTip(MOUSE_HELP)
 
@@ -185,6 +202,8 @@ class ModelView(gl.GLViewWidget):
 
     def show_planes(self, planes, bounds) -> None:
         self.clear_planes()
+        self._planes = list(planes)
+        self._plane_bounds = np.asarray(bounds, dtype=float)
         for plane in planes:
             vertices, faces = plane_quad(plane, bounds)
             item = gl.GLMeshItem(
@@ -202,6 +221,7 @@ class ModelView(gl.GLViewWidget):
         for item in self._plane_items:
             self.removeItem(item)
         self._plane_items = []
+        self._planes = []
 
     # -- delarna ----------------------------------------------------------
 
@@ -261,18 +281,109 @@ class ModelView(gl.GLViewWidget):
         self._bed_item = grid
         self.addItem(grid)
 
+    # -- att peka och ta tag i ett plan ------------------------------------
+
+    def ray_at(self, x: float, y: float) -> tuple[np.ndarray, np.ndarray]:
+        """Strålen från kameran genom en punkt på skärmen, i världskoordinater."""
+        width = max(self.width(), 1)
+        height = max(self.height(), 1)
+        ndc_x = 2.0 * float(x) / width - 1.0
+        ndc_y = 1.0 - 2.0 * float(y) / height
+
+        viewport = self.getViewport()
+        combined = self.projectionMatrix(viewport, viewport) * self.viewMatrix()
+        inverse, ok = combined.inverted()
+        if not ok:  # pragma: no cover - degenererad kamera
+            return np.zeros(3), np.array([0.0, 0.0, -1.0])
+
+        matrix = np.array(inverse.data(), dtype=float).reshape(4, 4).T
+
+        def unproject(depth: float) -> np.ndarray:
+            point = matrix @ np.array([ndc_x, ndc_y, depth, 1.0])
+            return point[:3] / point[3]
+
+        near, far = unproject(-1.0), unproject(1.0)
+        direction = far - near
+        length = float(np.linalg.norm(direction))
+        return near, direction / length if length > 1e-12 else direction
+
+    def plane_at(self, x: float, y: float):
+        """Vilket snittplan ligger under pekaren? Returnerar (index, träffpunkt)."""
+        if not self._planes:
+            return None
+        origin, direction = self.ray_at(x, y)
+        best = None
+        for number, plane in enumerate(self._planes):
+            normal = np.asarray(plane.unit_normal, dtype=float)
+            denominator = float(np.dot(direction, normal))
+            if abs(denominator) < 1e-9:
+                continue
+            distance = float(
+                np.dot(np.asarray(plane.origin, dtype=float) - origin, normal) / denominator
+            )
+            if distance <= 0:
+                continue
+            point = origin + direction * distance
+            corners, _ = plane_quad(plane, self._plane_bounds)
+            low = corners.min(axis=0) - PLANE_GRAB_TOLERANCE
+            high = corners.max(axis=0) + PLANE_GRAB_TOLERANCE
+            if np.any(point < low - 1e-6) or np.any(point > high + 1e-6):
+                continue
+            if best is None or distance < best[0]:
+                best = (distance, number, point)
+        if best is None:
+            return None
+        return best[1], best[2]
+
+    @staticmethod
+    def _closest_on_axis(point, axis, ray_origin, ray_direction) -> float:
+        """Hur långt längs `axis` från `point` strålen pekar.
+
+        Standardlösningen för att dra något längs en given riktning: hitta den
+        punkt på linjen som ligger närmast blickstrålen.
+        """
+        axis = np.asarray(axis, dtype=float)
+        w0 = np.asarray(point, dtype=float) - np.asarray(ray_origin, dtype=float)
+        a = float(np.dot(axis, axis))
+        b = float(np.dot(axis, ray_direction))
+        c = float(np.dot(ray_direction, ray_direction))
+        d = float(np.dot(axis, w0))
+        e = float(np.dot(ray_direction, w0))
+        denominator = a * c - b * b
+        if abs(denominator) < 1e-9:
+            return 0.0
+        return float((b * e - c * d) / denominator)
+
     # -- mus och kameravinklar --------------------------------------------
 
     def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt-namn
-        self._press_pos = event.position() if hasattr(event, "position") else event.localPos()
+        position = event.position() if hasattr(event, "position") else event.localPos()
+        self._press_pos = position
+        self._drag = None
+
+        if event.button() in (Qt.LeftButton, Qt.RightButton):
+            hit = self.plane_at(position.x(), position.y())
+            if hit is not None:
+                number, point = hit
+                self._drag = {
+                    "plane": number,
+                    "point": np.asarray(point, dtype=float),
+                    "last": position,
+                    "tilt": bool(event.modifiers() & Qt.ShiftModifier),
+                }
+                return
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event) -> None:  # noqa: N802 - Qt-namn
-        """Höger musknapp vrider modellen, precis som vänster.
+        """Drar användaren i ett plan flyttas det; annars vrids modellen.
 
         pyqtgraph använder bara vänster knapp till att rotera; många väntar sig
         att kunna dra med höger. Ctrl gör att dragningen flyttar vyn i stället.
         """
+        if self._drag is not None:
+            self._drag_plane(event)
+            return
+
         if event.buttons() & Qt.RightButton:
             position = (
                 event.position() if hasattr(event, "position") else event.localPos()
@@ -288,8 +399,36 @@ class ModelView(gl.GLViewWidget):
             return
         super().mouseMoveEvent(event)
 
+    def _drag_plane(self, event) -> None:
+        """Flytta eller vinkla planet som användaren håller i."""
+        position = event.position() if hasattr(event, "position") else event.localPos()
+        drag = self._drag
+        number = drag["plane"]
+        if not (0 <= number < len(self._planes)):
+            return
+        plane = self._planes[number]
+
+        if drag["tilt"] or (event.modifiers() & Qt.ShiftModifier):
+            delta = position - drag["last"]
+            drag["last"] = position
+            self.plane_tilted.emit(number, float(delta.x()), float(delta.y()))
+            return
+
+        origin, direction = self.ray_at(position.x(), position.y())
+        moved = self._closest_on_axis(drag["point"], plane.unit_normal, origin, direction)
+        if abs(moved) < 1e-6:
+            return
+        drag["point"] = drag["point"] + np.asarray(plane.unit_normal, dtype=float) * moved
+        self.plane_dragged.emit(number, float(moved))
+
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802 - Qt-namn
         """Ett högerklick utan dragning öppnar menyn med färdiga vinklar."""
+        if self._drag is not None:
+            number = self._drag["plane"]
+            self._drag = None
+            self.plane_released.emit(number)
+            return
+
         if event.button() == Qt.RightButton and not self._was_dragged(event):
             self.show_view_menu(event.globalPosition().toPoint())
             return
