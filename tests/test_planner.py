@@ -158,3 +158,94 @@ def test_oriented_mesh_matches_the_plan(big_box, printer):
     oriented = oriented_mesh(big_box, plan)
 
     assert np.allclose(oriented.bounds, plan.bounds, atol=1e-6)
+
+
+# --------------------------------------------------------------------------
+# Vinklade snitt
+# --------------------------------------------------------------------------
+
+
+def test_a_plane_knows_whether_it_is_straight():
+    import math
+
+    from stl_cutter.core.planner import Plane
+
+    straight = Plane(origin=(0.0, 0.0, 0.0), normal=(1.0, 0.0, 0.0), axis=0)
+    tilted = Plane(
+        origin=(0.0, 0.0, 0.0),
+        normal=(math.cos(math.radians(20)), math.sin(math.radians(20)), 0.0),
+        axis=0,
+    )
+
+    assert straight.is_axis_aligned
+    assert straight.tilt_deg == pytest.approx(0.0)
+    assert not tilted.is_axis_aligned
+    assert tilted.tilt_deg == pytest.approx(20.0, abs=0.01)
+
+
+def test_signed_distance_separates_the_sides():
+    from stl_cutter.core.planner import Plane
+
+    plane = Plane(origin=(10.0, 0.0, 0.0), normal=(1.0, 0.0, 0.0), axis=0)
+
+    distances = plane.signed_distance([[0.0, 0, 0], [20.0, 0, 0], [10.0, 0, 0]])
+
+    assert distances[0] < 0 and distances[1] > 0
+    assert distances[2] == pytest.approx(0.0)
+
+
+def test_dominant_axis_picks_the_closest():
+    from stl_cutter.core.planner import dominant_axis
+
+    assert dominant_axis((0.9, 0.3, 0.1)) == 0
+    assert dominant_axis((0.1, -0.95, 0.2)) == 1
+    assert dominant_axis((0.0, 0.2, 0.98)) == 2
+
+
+def test_make_cut_accepts_a_tilted_normal(big_box, printer):
+    import math
+
+    from stl_cutter.core.planner import make_cut
+
+    normal = (math.cos(math.radians(25)), math.sin(math.radians(25)), 0.0)
+    cut = make_cut(big_box, 0, 0.0, 1, printer, normal=normal)
+
+    assert cut.plane.tilt_deg == pytest.approx(25.0, abs=0.01)
+    assert cut.analysis is not None
+    assert cut.analysis.area_mm2 > 0
+    assert cut.recommendation is not None
+
+
+def test_a_tilted_plan_has_no_grid(big_box, printer):
+    """Ett vinklat snitt delar inte modellen i ett rutnät."""
+    import math
+
+    from stl_cutter.core.planner import make_cut, plan_from_cuts
+
+    normal = (math.cos(math.radians(20)), math.sin(math.radians(20)), 0.0)
+    cut = make_cut(big_box, 0, 0.0, 1, printer, normal=normal)
+
+    plan = plan_from_cuts(big_box, printer, [cut])
+
+    assert plan.part_count == 2
+    assert plan.part_boxes == []
+
+
+def test_a_tilted_cut_is_carried_through_the_whole_pipeline(printer):
+    import math
+
+    from stl_cutter.core.cutter import cut_mesh
+    from stl_cutter.core.planner import make_cut, plan_from_cuts
+
+    # Liten kropp, så att delarna får plats och fogen alltså inte begränsas bort.
+    body = trimesh.creation.box(extents=[200.0, 120.0, 60.0])
+    normal = (math.cos(math.radians(20)), math.sin(math.radians(20)), 0.0)
+    cut = make_cut(body, 0, 0.0, 1, printer, normal=normal)
+    plan = plan_from_cuts(body, printer, [cut])
+
+    result = cut_mesh(body, plan, joints=True, printer=printer, force_joint="pins")
+
+    assert len(result.parts) == 2
+    assert result.all_watertight
+    assert len(result.joints) == 1
+    assert result.joints[0].applied, "fogen ska byggas även på ett vinklat snitt"

@@ -399,6 +399,40 @@ utan, för gränssnittet där namnet redan står bredvid. `gui.joint_images` let
 upp dem och faller tillbaka på ingen bild om de saknas, `gui.joint_help` visar
 alla fem i ett fönster.
 
+**Dra snittplanet i vyn** — `ModelView.ray_at()` bygger en stråle från kameran
+genom muspekaren (inversen av projektion × vy), och `plane_at()` skär den mot
+varje ritat plan och returnerar det närmaste träffade. Tar användaren tag i ett
+plan går dragningen inte till kameran utan till planet:
+
+* utan modifierare flyttas planet längs sin **egen normal**. Förflyttningen
+  räknas ut med den klassiska lösningen för axeldragning: punkten på normalens
+  linje som ligger närmast blickstrålen (`_closest_on_axis()`).
+* med **Shift** vrids normalen kring vyns upp- och högeraxel, vilket ger ett
+  vinklat snitt.
+
+Signalerna `plane_dragged`, `plane_tilted` och `plane_released` går till
+`MainWindow`, som uppdaterar planen och tabellen. Analysen körs först vid
+`plane_released` - samma uppdelning som för positionsfältet.
+
+**Vinklade snitt** — `Plane.normal` är fri; `Plane.axis` är den axel normalen
+ligger närmast (`dominant_axis()`) och används för sortering och visning.
+`is_axis_aligned` och `tilt_deg` beskriver lutningen. Konsekvenser i kärnan:
+
+* `plan_from_cuts()` bygger bara ett rutnät av dellådor när **alla** snitt är
+  raka. Ett vinklat snitt delar inte modellen i ett rutnät, så `part_boxes` blir
+  tom och de verkliga måtten syns först i förhandsgranskningen.
+* `cutter.find_pairs()` avgör sidor med `Plane.signed_distance()` i stället för
+  att jämföra bounding box mot en axel, så vinklade snitt paras ihop lika bra
+  som raka.
+* Snittning, analys och foggeometri var redan normalbaserade och behövde inte
+  ändras.
+
+**Förhandsgranskning** — "Förhandsgranska" kör `cut_mesh(joints=True)` i
+bakgrundstråden utan att exportera, visar delarna isärdragna och rapporterar
+deras **verkliga** mått. `_rebuild_plan()` nollställer `self.result`, så en
+ändrad plan kastar förhandsgranskningen. "Kapa och exportera" återanvänder ett
+giltigt resultat i stället för att kapa om.
+
 **Musen i 3D-vyn** — `ModelView` skriver över `mouseMoveEvent` så att **höger**
 musknapp vrider kameran precis som vänster; pyqtgraph använder i grunden bara
 vänster. Ctrl + dra flyttar vyn i stället. Ett högerklick **utan** dragning

@@ -63,11 +63,34 @@ class Plane:
 
     origin: tuple[float, float, float]
     normal: tuple[float, float, float]
+    #: Den axel normalen ligger närmast. Styr hur snittet sorteras och visas.
     axis: int  # 0=X, 1=Y, 2=Z
 
     @property
     def position(self) -> float:
         return float(self.origin[self.axis])
+
+    @property
+    def unit_normal(self) -> np.ndarray:
+        normal = np.asarray(self.normal, dtype=float)
+        length = float(np.linalg.norm(normal))
+        return normal / length if length > 1e-12 else np.array([0.0, 0.0, 1.0])
+
+    @property
+    def is_axis_aligned(self) -> bool:
+        """Ligger planet rakt längs en axel, eller är det vinklat?"""
+        return bool(abs(abs(float(self.unit_normal[self.axis])) - 1.0) < 1e-6)
+
+    @property
+    def tilt_deg(self) -> float:
+        """Hur många grader planet lutar från sin axel."""
+        aligned = float(abs(self.unit_normal[self.axis]))
+        return float(math.degrees(math.acos(min(max(aligned, -1.0), 1.0))))
+
+    def signed_distance(self, points) -> np.ndarray:
+        """Avstånd från punkter till planet; negativt på del A:s sida."""
+        points = np.atleast_2d(np.asarray(points, dtype=float))
+        return (points - np.asarray(self.origin, dtype=float)) @ self.unit_normal
 
     def to_dict(self) -> dict:
         return {
@@ -75,6 +98,7 @@ class Plane:
             "normal": [round(v, 4) for v in self.normal],
             "axis": AXIS_NAMES[self.axis],
             "position_mm": round(self.position, 4),
+            "tilt_deg": round(self.tilt_deg, 2),
         }
 
 
@@ -298,14 +322,30 @@ def best_fit_orientation(
 # --------------------------------------------------------------------------
 
 
-def _make_plane(bounds: np.ndarray, axis: int, position: float) -> Plane:
+def _make_plane(
+    bounds: np.ndarray, axis: int, position: float, normal=None
+) -> Plane:
     origin = list((bounds[0] + bounds[1]) / 2.0)
     origin[axis] = float(position)
-    normal = [0.0, 0.0, 0.0]
-    normal[axis] = 1.0
+    if normal is None:
+        direction = [0.0, 0.0, 0.0]
+        direction[axis] = 1.0
+    else:
+        direction = np.asarray(normal, dtype=float)
+        length = float(np.linalg.norm(direction))
+        if length < 1e-12:
+            raise ValueError("Snittplanets normal får inte vara noll.")
+        direction = (direction / length).tolist()
     return Plane(
-        origin=tuple(float(v) for v in origin), normal=tuple(normal), axis=axis
+        origin=tuple(float(v) for v in origin),
+        normal=tuple(float(v) for v in direction),
+        axis=int(axis),
     )
+
+
+def dominant_axis(normal) -> int:
+    """Den axel en normal ligger närmast."""
+    return int(np.argmax(np.abs(np.asarray(normal, dtype=float))))
 
 
 def candidate_positions(
@@ -612,6 +652,7 @@ def make_cut(
     printer: PrinterProfile | None = None,
     assembly_intent: AssemblyIntent = "glue",
     bounds: np.ndarray | None = None,
+    normal=None,
 ) -> CutInfo:
     """Ett enskilt snitt på en given plats, med analys och fogförslag.
 
@@ -621,7 +662,9 @@ def make_cut(
     """
     if bounds is None:
         bounds = np.asarray(mesh.bounds, dtype=float)
-    plane = _make_plane(np.asarray(bounds, dtype=float), int(axis), float(position))
+    plane = _make_plane(
+        np.asarray(bounds, dtype=float), int(axis), float(position), normal=normal
+    )
     analysis = analyse_section(mesh, plane.origin, plane.normal, axis=int(axis))
 
     info = CutInfo(index=int(index), plane=plane, analysis=analysis)
@@ -668,12 +711,21 @@ def plan_from_cuts(
     for number, cut in enumerate(kept, start=1):
         cut.index = number
 
-    divisions = tuple(len(positions.get(axis, [])) + 1 for axis in range(3))
-    boxes = _part_boxes(bounds, positions)
+    axis_aligned = all(cut.plane.is_axis_aligned for cut in kept)
+    if axis_aligned:
+        divisions = tuple(len(positions.get(axis, [])) + 1 for axis in range(3))
+        boxes = _part_boxes(bounds, positions)
+        part_count = divisions[0] * divisions[1] * divisions[2]
+    else:
+        # Ett vinklat snitt delar inte modellen i ett rutnät. Delarnas mått går
+        # inte att räkna ut i förväg - de syns först i förhandsgranskningen.
+        divisions = (1, 1, 1)
+        boxes = []
+        part_count = len(kept) + 1
 
     return SplitPlan(
         cuts=kept,
-        part_count=divisions[0] * divisions[1] * divisions[2],
+        part_count=part_count,
         part_boxes=boxes,
         transform=transform,
         orientation_name=orientation_name,

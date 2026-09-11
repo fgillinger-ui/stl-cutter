@@ -88,9 +88,21 @@ och en 3D-vy till höger.
      följer med medan du ändrar värdet.
    * **Fogtyp** — välj fritt, oavsett vad programmet föreslog
 
+   **Eller ta tag i snittet direkt i 3D-vyn:**
+
+   | Gör så här | Vad som händer |
+   |-----------|----------------|
+   | Dra i ett snittplan | Flyttar snittet längs sin egen riktning |
+   | **Shift** + dra i ett snittplan | Vinklar snittet — du kan kapa snett |
+   | Dra vid sidan om planen | Vrider modellen som vanligt |
+
+   Tabellen och 3D-vyn hålls i takt: drar du planet ändras siffran, skriver du
+   en siffra flyttas planet.
+
    Knapparna under tabellen: *Lägg till snitt* placerar ett nytt snitt mitt på
-   modellens längsta sida, *Ta bort snitt* tar bort det markerade, och
-   *Räkna ut åt mig* kastar dina snitt och tar tillbaka programmets förslag.
+   modellens längsta sida, *Ta bort snitt* tar bort det markerade, *Räta upp*
+   tar bort lutningen på ett vinklat snitt, och *Räkna ut åt mig* kastar dina
+   snitt och tar tillbaka programmets förslag.
 
    Du behöver inte börja med *Analysera* — klicka *Lägg till snitt* direkt så
    placerar du alla snitt själv från början.
@@ -98,7 +110,11 @@ och en 3D-vy till höger.
    Raden under knapparna visar hela tiden hur många delar planen ger, hur stor
    den största blir, och varnar i rött om någon del inte får plats på
    byggplattan.
-5. **Kapa och exportera** — välj en målmapp och klicka *Kapa modellen*.
+5. **Kapa och exportera** — klicka *Förhandsgranska* för att se resultatet först:
+   modellen kapas i minnet, delarna visas isärdragna i 3D-vyn och du får de
+   verkliga måtten — **inga filer skrivs**. Ser det rätt ut, välj målmapp och
+   klicka *Kapa och exportera*. Har du redan förhandsgranskat skrivs samma
+   resultat ut direkt, utan att räknas om.
 
 I 3D-vyn ser du modellen, snittplanen som orange plan, och efter kapningen
 delarna i olika färger. Dra i reglaget *Spräng isär* för att se fogarna, och
@@ -109,7 +125,8 @@ Kryssrutan *Ljus bakgrund* växlar mellan ljus och mörk vy — valet sparas.
 
 | Gör så här | Vad som händer |
 |-----------|----------------|
-| Dra med **höger** eller **vänster** musknapp | Vrider modellen så att du kan se den från alla håll |
+| Dra i ett **snittplan** | Flyttar snittet. Shift+dra vinklar det. |
+| Dra med **höger** eller **vänster** musknapp vid sidan om planen | Vrider modellen så att du kan se den från alla håll |
 | **Mushjulet** | Zoomar in och ut |
 | **Mittenknappen**, eller **Ctrl** + dra | Flyttar vyn i sidled |
 | **Högerklick** utan att dra | Meny med färdiga vinklar: framifrån, ovanifrån, från sidan, samt *Anpassa till modellen* |

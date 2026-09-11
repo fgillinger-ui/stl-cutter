@@ -1107,3 +1107,226 @@ def test_the_view_shows_the_model_in_the_plans_frame(qapp, window, tmp_path):
     assert not np.allclose(window.plan.transform, np.eye(4)), "modellen ska ha roterats"
     shown = window.view.content_bounds()
     assert np.allclose(shown, window.plan.bounds, atol=1.0)
+
+
+# --------------------------------------------------------------------------
+# Dra snittplanet direkt i 3D-vyn
+# --------------------------------------------------------------------------
+
+
+def _plane_drag(view, path, modifier=None):
+    """Tryck ner, dra längs `path` och släpp - på ett snittplan."""
+    from PySide6.QtCore import QEvent, QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+
+    modifier = modifier or Qt.NoModifier
+
+    def event(kind, x, y, button, buttons):
+        return QMouseEvent(
+            kind, QPointF(x, y), QPointF(x, y), button, buttons, modifier
+        )
+
+    from PySide6.QtCore import Qt as _Qt
+
+    view.mousePressEvent(
+        event(QEvent.MouseButtonPress, *path[0], _Qt.LeftButton, _Qt.LeftButton)
+    )
+    for point in path[1:]:
+        view.mouseMoveEvent(
+            event(QEvent.MouseMove, *point, _Qt.NoButton, _Qt.LeftButton)
+        )
+    view.mouseReleaseEvent(
+        event(QEvent.MouseButtonRelease, *path[-1], _Qt.LeftButton, _Qt.NoButton)
+    )
+
+
+def _centre(view):
+    return view.width() / 2, view.height() / 2
+
+
+def test_the_plane_can_be_picked_in_the_view(qapp, window, model_file):
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+    window.add_cut()
+
+    hit = window.view.plane_at(*_centre(window.view))
+
+    assert hit is not None
+    assert hit[0] == 0
+
+
+def test_nothing_is_picked_in_an_empty_corner(qapp, window, model_file):
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+    window.add_cut()
+
+    assert window.view.plane_at(2, 2) is None
+
+
+def test_dragging_the_plane_moves_the_cut(qapp, window, model_file):
+    """Det användaren bad om: ta tag i snittet och dra det."""
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+    window.add_cut()
+    before = window.plan.cuts[0].plane.position
+    x, y = _centre(window.view)
+
+    _plane_drag(window.view, [(x, y), (x + 60, y), (x + 120, y)])
+    wait_for_worker(qapp, window) if window.worker else None
+
+    after = window.plan.cuts[0].plane.position
+    assert after != pytest.approx(before), "planet ska ha flyttats"
+    assert _position_widget(window, 0).value() == pytest.approx(after, abs=0.05)
+    assert window.plan.cuts[0].analysis.position_mm == pytest.approx(after, abs=0.05)
+
+
+def test_dragging_beside_the_plane_rotates_the_camera(qapp, window, model_file):
+    """En dragning som inte träffar planet ska vrida modellen som förut."""
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+    window.add_cut()
+    position = window.plan.cuts[0].plane.position
+    azimuth = window.view.opts["azimuth"]
+
+    _plane_drag(window.view, [(3, 3), (60, 40)])
+
+    assert window.view.opts["azimuth"] != azimuth
+    assert window.plan.cuts[0].plane.position == pytest.approx(position)
+
+
+def test_shift_dragging_tilts_the_plane(qapp, window, model_file):
+    from PySide6.QtCore import Qt
+
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+    window.add_cut()
+    assert window.plan.cuts[0].plane.is_axis_aligned
+    x, y = _centre(window.view)
+
+    _plane_drag(
+        window.view,
+        [(x, y), (x + 30, y + 15), (x + 60, y + 30)],
+        modifier=Qt.ShiftModifier,
+    )
+
+    cut = window.plan.cuts[0]
+    assert not cut.plane.is_axis_aligned
+    assert cut.plane.tilt_deg > 5.0
+    assert cut.analysis is not None, "det vinklade snittet ska analyseras om"
+
+
+def test_a_tilted_cut_can_be_straightened(qapp, window, model_file):
+    from PySide6.QtCore import Qt
+
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+    window.add_cut()
+    x, y = _centre(window.view)
+    _plane_drag(window.view, [(x, y), (x + 60, y + 30)], modifier=Qt.ShiftModifier)
+    assert not window.plan.cuts[0].plane.is_axis_aligned
+
+    window.cut_table.setCurrentCell(0, 0)
+    window.straighten_cut()
+
+    assert window.plan.cuts[0].plane.is_axis_aligned
+    assert window.plan.cuts[0].plane.tilt_deg == pytest.approx(0.0, abs=1e-6)
+
+
+def test_the_tilt_is_shown_next_to_the_motivation(qapp, window, model_file):
+    from PySide6.QtCore import Qt
+
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+    window.add_cut()
+    x, y = _centre(window.view)
+
+    _plane_drag(window.view, [(x, y), (x + 60, y + 30)], modifier=Qt.ShiftModifier)
+
+    assert "lutar" in window.motivation_label.text()
+
+
+# --------------------------------------------------------------------------
+# Förhandsgranskning innan kapning
+# --------------------------------------------------------------------------
+
+
+def test_preview_shows_the_parts_without_writing_files(qapp, window, model_file, tmp_path):
+    """Se att allt stämmer innan man kapar på riktigt."""
+    out_dir = tmp_path / "ut"
+    window.settings.last_output_dir = str(out_dir)
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+    window.start_analysis()
+    wait_for_worker(qapp, window)
+
+    window.start_preview()
+    wait_for_worker(qapp, window)
+
+    assert window.result is not None
+    assert len(window.result.parts) == 3
+    assert len(window.view._part_items) == 3, "delarna ska visas i vyn"
+    assert not out_dir.exists(), "förhandsgranskningen ska inte skriva några filer"
+    assert "inga filer" in window.status_box.toPlainText()
+
+
+def test_preview_explodes_the_parts_automatically(qapp, window, model_file):
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+    window.start_analysis()
+    wait_for_worker(qapp, window)
+    assert window.explode_slider.value() == 0
+
+    window.start_preview()
+    wait_for_worker(qapp, window)
+
+    assert window.explode_slider.value() > 0, "sprängskissen ska öppna sig av sig själv"
+
+
+def test_preview_reports_the_real_part_sizes(qapp, window, model_file):
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+    window.start_analysis()
+    wait_for_worker(qapp, window)
+
+    window.start_preview()
+    wait_for_worker(qapp, window)
+
+    assert "3 delar" in window.plan_summary.text()
+    assert "får inte plats" not in window.plan_summary.text()
+
+
+def test_editing_a_cut_throws_the_preview_away(qapp, window, model_file):
+    """Ändrar man planen gäller inte förhandsgranskningen längre."""
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+    window.start_analysis()
+    wait_for_worker(qapp, window)
+    window.start_preview()
+    wait_for_worker(qapp, window)
+    assert window.result is not None
+
+    _move_cut(window, 0, -150.0)
+
+    assert window.result is None
+
+
+def test_exporting_after_a_preview_writes_the_files(qapp, window, model_file, tmp_path):
+    out_dir = tmp_path / "ut"
+    window.settings.last_output_dir = str(out_dir)
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+    window.start_analysis()
+    wait_for_worker(qapp, window)
+    window.start_preview()
+    wait_for_worker(qapp, window)
+    previewed = window.result
+
+    window.start_cut()
+    wait_for_worker(qapp, window)
+
+    assert window.result is previewed, "samma resultat ska exporteras, inte kapas om"
+    assert sorted(p.name for p in out_dir.glob("part_*.stl")) == [
+        "part_01.stl",
+        "part_02.stl",
+        "part_03.stl",
+    ]
