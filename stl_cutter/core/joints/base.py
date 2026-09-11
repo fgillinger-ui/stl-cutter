@@ -326,12 +326,26 @@ def engine_name() -> str | None:
 
 
 def _clean(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
-    mesh.merge_vertices()
-    mesh.update_faces(mesh.nondegenerate_faces())
-    mesh.remove_unreferenced_vertices()
-    if not mesh.is_winding_consistent or mesh.volume < 0:
-        mesh.fix_normals()
-    return mesh
+    """Städa en mesh - men aldrig så att den blir sämre än den var.
+
+    `nondegenerate_faces()` kastar mycket tunna trianglar. På en mesh som redan
+    är hel kan det öppna hål, och då blir resultatet oanvändbart för nästa
+    boolean. Städningen kastas därför om den förstör en hel mesh.
+    """
+    was_watertight = bool(mesh.is_watertight)
+
+    cleaned = mesh.copy()
+    cleaned.merge_vertices()
+    cleaned.update_faces(cleaned.nondegenerate_faces())
+    cleaned.remove_unreferenced_vertices()
+
+    if was_watertight and not cleaned.is_watertight:
+        log.debug("Städningen öppnade hål i en hel mesh - behåller originalet.")
+        cleaned = mesh
+
+    if not cleaned.is_winding_consistent or cleaned.volume < 0:
+        cleaned.fix_normals()
+    return cleaned
 
 
 def _boolean(operation: str, meshes: list[trimesh.Trimesh]) -> trimesh.Trimesh:

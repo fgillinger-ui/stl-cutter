@@ -40,6 +40,8 @@ SCORE_WEIGHTS = {
     "small_part": 20.0,
     # Håll snittet nära den jämnt fördelade positionen om inget annat talar emot.
     "offset": 4.0,
+    # En del som fyller byggplattan helt lämnar ingen plats för fogen.
+    "joint_room": 15.0,
 }
 
 #: Konfiguration för kandidatsökningen.
@@ -51,6 +53,7 @@ SCORE_CONFIG = {
     "area_min_mm2": 200.0,
     "area_max_mm2": 20000.0,
     "min_part_fraction": 0.05,  # skiva tunnare än 5 % av axeln straffas
+    "joint_room_mm": 12.0,  # utrymme som helst ska finnas kvar till fogen
 }
 
 
@@ -344,11 +347,15 @@ def score_candidate(
     axis_length: float,
     weights: dict | None = None,
     config: dict | None = None,
+    slabs_mm: tuple[float, float] | None = None,
+    usable_mm: float | None = None,
 ) -> CandidateScore:
     """Poängsätt ett kandidatplan. Poängen är straff - lägre är bättre.
 
     `slab_fractions` är de två angränsande skivornas tjocklek som andel av
     axelns längd, och används som billig approximation av delvolymen.
+    `slabs_mm` och `usable_mm` används för att hålla delarna en bit från
+    byggvolymens gräns, så att fogen får plats att sticka ut.
     """
     w = {**SCORE_WEIGHTS, **(weights or {})}
     cfg = {**SCORE_CONFIG, **(config or {})}
@@ -381,6 +388,14 @@ def score_candidate(
     if thinnest < cfg["min_part_fraction"]:
         deficit = (cfg["min_part_fraction"] - thinnest) / cfg["min_part_fraction"]
         penalties["small_part"] = w["small_part"] * deficit
+
+    # En skiva som fyller byggplattan helt lämnar ingen plats för fogens
+    # nyckel, som måste sticka ut några millimeter.
+    if slabs_mm is not None and usable_mm:
+        wanted = cfg["joint_room_mm"]
+        tightest = min(usable_mm - float(slab) for slab in slabs_mm)
+        if tightest < wanted:
+            penalties["joint_room"] = w["joint_room"] * (wanted - max(tightest, 0.0)) / wanted
 
     # Avvikelse från jämn fördelning.
     reach = max(cfg["search_fraction"] * axis_length, 1e-6)
@@ -432,7 +447,15 @@ def _optimise_axis(
                 (high - position) / (remaining * length),
             )
             score = score_candidate(
-                analysis, position, nominal, slab_fractions, length, weights, config
+                analysis,
+                position,
+                nominal,
+                slab_fractions,
+                length,
+                weights,
+                config,
+                slabs_mm=(position - previous, (high - position) / max(remaining, 1)),
+                usable_mm=usable,
             )
             if best is None or score.total < best[2].total:
                 best = (plane, analysis, score, nominal)
