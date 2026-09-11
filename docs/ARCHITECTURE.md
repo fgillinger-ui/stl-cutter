@@ -45,6 +45,8 @@ stl_cutter/
     paths.py          #   XDG-sökvägar
 data/printers.json    # inbyggda profiler
 assets/stl-cutter.svg # programikon
+assets/joints/*.svg   # bilder på fogtyperna, genererade från geometrin
+tools/render_joints.py # genererar bilderna
 install.sh            # installation på Kubuntu, idempotent                [fas 5]
 .github/workflows/    # CI: pytest på Python 3.12 + shellcheck             [fas 5]
 docs/JOINTS.md        # fogtyperna för användaren                          [fas 5]
@@ -333,6 +335,16 @@ rapport. Fönstret fryser aldrig, och knappar avaktiveras medan arbete pågår.
 
 **Fel** — `workers.friendly_error()` översätter undantag till svenska
 meddelanden i statusrutan. Stacktracen går bara till loggfilen.
+
+**Bilder på fogtyperna** — `tools/render_joints.py` bygger varje fogtyp med
+`joints.build_joint()`, drar isär delarna (och vänder honan, eller lägger ett
+snitt genom skruvfogen) och projicerar trianglarna till SVG med målarens
+algoritm och enkel flat shading. Ingen grafikdrivrutin behövs, och bilderna kan
+aldrig visa något annat än vad programmet faktiskt bygger. Två varianter skrivs
+per fogtyp: `<typ>.svg` med rubrik för dokumentationen och `<typ>-plain.svg`
+utan, för gränssnittet där namnet redan står bredvid. `gui.joint_images` letar
+upp dem och faller tillbaka på ingen bild om de saknas, `gui.joint_help` visar
+alla fem i ett fönster.
 
 **3D-vyn** — bakgrunden går att växla mellan ljus (standard) och mörk med en
 kryssruta; modellens och byggplattans färger byts med den, så att inget

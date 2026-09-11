@@ -8,6 +8,12 @@ Måttet som styr valet mest är **minsta väggtjocklek i snittet**: diametern p�
 den största cirkel som får plats inuti snittytan. En tunn platta har liten
 väggtjocklek även om snittet är brett.
 
+I bilderna nedan har den **blå** delen hanen och den **orange** delen honan.
+Bilderna är renderade från den riktiga foggeometrin med
+`python tools/render_joints.py`, så de visar exakt vad programmet bygger.
+Samma bilder finns i det grafiska gränssnittet under knappen
+*Fogtyper – vad är vad?*.
+
 ## Översikt
 
 | Fogtyp | Passar när | Tas isär igen? | Rekommenderad tolerans |
@@ -25,6 +31,8 @@ kommer från skrivarprofilen: 0,15 mm för de flesta, 0,20 mm för Ender 3.
 
 ## `none` — plan limfog
 
+![none](../assets/joints/none.svg)
+
 Ingen geometri alls, bara en plan yta.
 
 **När:** snittet är tunnare än 4 mm. Där får ingen fog plats utan att väggen
@@ -41,6 +49,8 @@ hjälper till.
 ---
 
 ## `puzzle` — pusselprofil
+
+![puzzle](../assets/joints/puzzle.svg)
 
 En vågig skarv genom hela materialtjockleken, som en pusselbit. Två profiler
 finns: `sine` (mjuk vågform, standard) och `keyhole` (rundade tappar med
@@ -61,6 +71,8 @@ lämnar ingen plan yta att sätta dem i, och profilen styr redan delarna.
 ---
 
 ## `dovetail` — laxstjärt
+
+![dovetail](../assets/joints/dovetail.svg)
 
 Ett trapetsformat spår som är bredare längst ut än vid halsen (8° vinkel). Det
 gör att delarna **inte** går att dra isär vinkelrätt mot skarven — bara skjutas
@@ -86,6 +98,8 @@ stående.
 
 ## `pins` — styrpinnar (dowels)
 
+![pins](../assets/joints/pins.svg)
+
 Cylindriska tappar med fasad topp på ena delen, hål med spel i den andra.
 Diametern är 20 % av minsta väggtjocklek, som mest 8 mm. Hålet borras 0,3 mm
 djupare än pinnen är lång, så att pinnen bottnar mot luft och delarna verkligen
@@ -107,6 +121,8 @@ väggen runt hålet inte spricker.
 ---
 
 ## `screw` — M3-skruv med mutter
+
+![screw](../assets/joints/screw.svg)
 
 Genomgående hål Ø3,4 mm och försänkning för skruvskallen i ena delen,
 sexkantsficka för en M3-mutter (nyckelvidd 5,5 mm) vid snittytan i den andra.

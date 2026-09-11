@@ -44,6 +44,14 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
 
+      # Bilderna på fogtyperna är genererade från geometrin. Ändras fogarna
+      # utan att bilderna görs om visar dokumentationen fel.
+      - name: Kontrollera att fogbilderna är aktuella
+        run: |
+          python tools/render_joints.py
+          git diff --exit-code --stat assets/joints \
+            || (echo "Bilderna är inaktuella - kör: python tools/render_joints.py" && exit 1)
+
   install-script:
     name: install.sh
     runs-on: ubuntu-latest
