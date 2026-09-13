@@ -4,6 +4,8 @@ Exempel:
     python -m stl_cutter.cli cut modell.stl --printer "Bambu P1S" --out ./ut
     python -m stl_cutter.cli --list-printers
     python -m stl_cutter.cli cut modell.stl --printer "Prusa MK4" --dry-run
+    python -m stl_cutter.cli resize modell.stl --y 550 --out modell_550.stl
+    python -m stl_cutter.cli analyze-spans modell.stl --axis y
 """
 
 from __future__ import annotations
@@ -13,10 +15,13 @@ import logging
 import sys
 from pathlib import Path
 
-from .core import exporter, mesh_io
+from .core import exporter, mesh_io, resize as resize_core
 from .core.cutter import cut_mesh, parts_fit
 from .core.planner import plan_splits
 from .core.printers import PrinterProfile, get_printer, load_printers, save_profile
+from .core.resize import ResizeError
+
+AXIS_FROM_LETTER = {"x": 0, "y": 1, "z": 2}
 
 
 def _print_printers() -> None:
@@ -29,6 +34,47 @@ def _print_printers() -> None:
             f"(användbart {ux:g} x {uy:g} x {uz:g}, marginal {profile.margin_mm:g} mm, "
             f"tolerans {profile.clearance_mm:g} mm)"
         )
+
+
+def _add_resize_options(parser: argparse.ArgumentParser) -> None:
+    """Flaggor som styr måttändringen. Delas av `resize` och `cut`."""
+    parser.add_argument(
+        "--mode",
+        choices=["preserve", "scale"],
+        default="preserve",
+        help="preserve ändrar bara prismatiska partier; scale skalar rakt av och deformerar.",
+    )
+    parser.add_argument(
+        "--distribute",
+        action="store_true",
+        help="Fördela ändringen proportionellt över alla partier i stället för det längsta.",
+    )
+    parser.add_argument(
+        "--span",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Använd parti nummer N (1 och uppåt) ur analyze-spans-listan.",
+    )
+    parser.add_argument(
+        "--step",
+        type=float,
+        default=resize_core.DEFAULT_STEP_MM,
+        help="Avstånd mellan provade tvärsnitt i mm.",
+    )
+    parser.add_argument(
+        "--tol",
+        type=float,
+        default=resize_core.DEFAULT_TOL,
+        help="Relativ tolerans när två tvärsnitt jämförs.",
+    )
+    parser.add_argument(
+        "--min-span",
+        type=float,
+        default=resize_core.MIN_SPAN_LENGTH_MM,
+        help="Kortaste parti som räknas som prismatiskt, i mm. Höj det för att "
+        "hindra --distribute från att också sträcka korta detaljer som hyllplan.",
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -79,10 +125,67 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Bygg ingen foggeometri - bara plana snitt.",
     )
+    for letter in ("x", "y", "z"):
+        cut.add_argument(
+            f"--resize-{letter}",
+            type=float,
+            default=None,
+            metavar="MM",
+            help=f"Ändra måttet i {letter.upper()} till MM innan snitten planeras.",
+        )
+    _add_resize_options(cut)
     cut.add_argument(
         "--no-analysis",
         action="store_true",
         help="Hoppa över analys av snittytor - snabbare, men snitten läggs jämnt fördelade.",
+    )
+
+    resize_cmd = sub.add_parser(
+        "resize",
+        help="Ändra ett eller flera mått utan att deformera godstjocklek och hål.",
+    )
+    resize_cmd.add_argument("model", type=Path, help="Sökväg till STL- eller 3MF-fil.")
+    for letter in ("x", "y", "z"):
+        resize_cmd.add_argument(
+            f"--{letter}",
+            type=float,
+            default=None,
+            metavar="MM",
+            help=f"Önskat mått i {letter.upper()}, i mm.",
+        )
+    resize_cmd.add_argument(
+        "--out", type=Path, default=None, help="Målfil. Standard: <modell>_resized.stl"
+    )
+    resize_cmd.add_argument(
+        "--report",
+        type=Path,
+        default=None,
+        help="Mapp för resize_report.json. Standard: samma mapp som målfilen.",
+    )
+    _add_resize_options(resize_cmd)
+
+    spans_cmd = sub.add_parser(
+        "analyze-spans",
+        help="Visa var modellen går att sträcka - partierna med konstant tvärsnitt.",
+    )
+    spans_cmd.add_argument("model", type=Path, help="Sökväg till STL- eller 3MF-fil.")
+    spans_cmd.add_argument(
+        "--axis",
+        choices=["x", "y", "z", "all"],
+        default="all",
+        help="Vilken axel som ska analyseras.",
+    )
+    spans_cmd.add_argument(
+        "--step", type=float, default=resize_core.DEFAULT_STEP_MM, help="Avstånd mellan tvärsnitt i mm."
+    )
+    spans_cmd.add_argument(
+        "--tol", type=float, default=resize_core.DEFAULT_TOL, help="Relativ tolerans."
+    )
+    spans_cmd.add_argument(
+        "--min-span",
+        type=float,
+        default=resize_core.MIN_SPAN_LENGTH_MM,
+        help="Kortaste parti som räknas, i mm.",
     )
 
     printers = sub.add_parser("printers", help="Hantera skrivarprofiler.")
@@ -93,6 +196,96 @@ def build_parser() -> argparse.ArgumentParser:
     printers.add_argument("--clearance", type=float, default=0.15)
 
     return parser
+
+
+def _span_selection(args: argparse.Namespace) -> tuple[str, int | None]:
+    """Hur `delta` ska fördelas, utifrån flaggorna."""
+    if args.span is not None:
+        if args.span < 1:
+            raise ValueError("--span numreras från 1 och uppåt.")
+        return "manual", args.span - 1
+    return ("distribute" if args.distribute else "longest"), None
+
+
+def _print_resize(result) -> None:
+    for entry in result.axes:
+        name = resize_core.AXIS_NAMES[entry.axis]
+        print(
+            f"  {name}: {entry.from_mm:.1f} -> {entry.to_mm:.1f} mm "
+            f"({entry.delta_mm:+.1f} mm, {entry.mode})"
+        )
+        for span, delta in entry.chosen:
+            print(f"      {delta:+7.2f} mm i {span.describe()}")
+        if entry.mode == "preserve" and entry.chosen:
+            print(
+                f"      volym {entry.actual_volume_change_mm3 / 1000.0:+.2f} cm3 "
+                f"(väntat {entry.expected_volume_change_mm3 / 1000.0:+.2f} cm3)"
+            )
+    for warning in result.warnings:
+        print(f"  VARNING: {warning}")
+
+
+def _resize_targets(args: argparse.Namespace, prefix: str = "") -> list[float | None]:
+    return [getattr(args, f"{prefix}{letter}") for letter in ("x", "y", "z")]
+
+
+def _cmd_resize(args: argparse.Namespace) -> int:
+    targets = _resize_targets(args)
+    if all(target is None for target in targets):
+        print("Ange minst ett mått med --x, --y eller --z.", file=sys.stderr)
+        return 2
+
+    info = mesh_io.load_mesh(args.model)
+    print(info.summary())
+    for repair in info.repairs:
+        print(f"  reparation: {repair}")
+
+    selection, span_index = _span_selection(args)
+    result = resize_core.resize(
+        info.mesh,
+        targets,
+        mode=args.mode,
+        span_selection=selection,
+        span_index=span_index,
+        step=args.step,
+        tol=args.tol,
+        min_span_mm=args.min_span,
+    )
+    print("\nMåttändring:")
+    _print_resize(result)
+
+    out = args.out or args.model.with_name(f"{args.model.stem}_resized.stl")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    if out.suffix.lower() == ".3mf":
+        mesh_io.save_3mf(result.mesh, out)
+    else:
+        mesh_io.save_stl(result.mesh, out)
+    report_dir = args.report or out.parent
+    report = resize_core.write_resize_report(result, report_dir, source=args.model)
+    x, y, z = result.mesh.extents
+    print(f"\nSkrev {out} ({x:.1f} x {y:.1f} x {z:.1f} mm)")
+    print(f"Rapport: {report}")
+    return 0
+
+
+def _cmd_analyze_spans(args: argparse.Namespace) -> int:
+    info = mesh_io.load_mesh(args.model)
+    print(info.summary())
+    axes = [0, 1, 2] if args.axis == "all" else [AXIS_FROM_LETTER[args.axis]]
+    found = False
+    for axis in axes:
+        spans = resize_core.find_prismatic_spans(
+            info.mesh, axis, step=args.step, tol=args.tol, min_length_mm=args.min_span
+        )
+        found = found or bool(spans)
+        print()
+        print(resize_core.describe_spans(info.mesh, axis, spans))
+    if not found:
+        print(
+            "\nModellen har inga partier med konstant tvärsnitt. Måtten går bara att "
+            "ändra med --mode scale, vilket förändrar godstjocklek och hål."
+        )
+    return 0
 
 
 def _cmd_cut(args: argparse.Namespace) -> int:
@@ -112,8 +305,29 @@ def _cmd_cut(args: argparse.Namespace) -> int:
     for repair in info.repairs:
         print(f"  reparation: {repair}")
 
+    # Måttändringen sker alltid före snittplaneringen - annars planeras snitten
+    # för en modell som inte längre finns.
+    mesh = info.mesh
+    targets = _resize_targets(args, prefix="resize_")
+    if any(target is not None for target in targets):
+        selection, span_index = _span_selection(args)
+        resized = resize_core.resize(
+            mesh,
+            targets,
+            mode=args.mode,
+            span_selection=selection,
+            span_index=span_index,
+            step=args.step,
+            tol=args.tol,
+            min_span_mm=args.min_span,
+        )
+        mesh = resized.mesh
+        print("\nMåttändring:")
+        _print_resize(resized)
+        resize_core.write_resize_report(resized, args.out, source=args.model)
+
     plan = plan_splits(
-        info.mesh,
+        mesh,
         printer,
         auto_orient=not args.no_orient,
         analyse=not args.no_analysis,
@@ -137,7 +351,7 @@ def _cmd_cut(args: argparse.Namespace) -> int:
 
     build_joints = not args.no_joints and args.joint != "none"
     result = cut_mesh(
-        info.mesh,
+        mesh,
         plan,
         joints=build_joints,
         printer=printer,
@@ -215,8 +429,17 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "cut":
             return _cmd_cut(args)
+        if args.command == "resize":
+            return _cmd_resize(args)
+        if args.command == "analyze-spans":
+            return _cmd_analyze_spans(args)
         if args.command == "printers":
             return _cmd_printers(args)
+    except ResizeError as exc:
+        print(f"Fel: {exc.message}", file=sys.stderr)
+        if exc.suggestion:
+            print(exc.suggestion, file=sys.stderr)
+        return 3
     except (FileNotFoundError, ValueError, KeyError) as exc:
         print(f"Fel: {exc}", file=sys.stderr)
         return 2

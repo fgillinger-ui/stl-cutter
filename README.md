@@ -8,6 +8,10 @@ styrpinnar, pusselprofil, skruv eller plan limfog) med motivering på svenska,
 och **bygger fogen i geometrin** — så att delarna går att passa ihop och limma
 eller skruva.
 
+Det kan också **ändra ett mått** på modellen — göra lådan 550 mm djup i stället
+för 250 — utan att godstjocklek, hörnradier eller hål förändras. Se
+[docs/RESIZE.md](docs/RESIZE.md).
+
 Det finns både ett **grafiskt gränssnitt** och ett kommandoradsverktyg.
 
 ## Installation (Kubuntu)
@@ -71,6 +75,12 @@ och en 3D-vy till höger.
 
 1. **Modell** — klicka *Öppna fil…* eller dra en STL- eller 3MF-fil in i
    fönstret. Programmet visar mått, volym och om modellen är hel.
+1b. **Ändra mått** — behöver modellen vara större eller mindre? Skriv in de
+   önskade måtten. Klicka *Visa var modellen kan sträckas* för att se de gröna
+   partierna där tvärsnittet är konstant — det är där materialet skjuts in.
+   Godstjocklek, hörnradier och hål behåller sina mått. Hittas inget sådant
+   parti får du en varning och kan välja skalning i stället, med vetskap om att
+   hål då blir ovala. *Ångra* lägger tillbaka originalet.
 2. **Skrivare** — välj din skrivare i listan. Måtten fylls i automatiskt men går
    att ändra. Har du en skrivare som inte finns med: skriv in måtten och klicka
    *Spara som ny profil*.
@@ -170,6 +180,19 @@ stl-cutter cut modell.stl --printer "Bambu P1S" --out ./ut \
     --assembly demountable --explain
 ```
 
+Ändra ett mått utan att deformera modellen:
+
+```bash
+stl-cutter analyze-spans modell.stl --axis y
+stl-cutter resize modell.stl --y 550 --out modell_550.stl
+```
+
+Ändra måttet och kapa i ett svep:
+
+```bash
+stl-cutter cut modell.stl --resize-y 550 --printer "Bambu P1S" --out ./ut
+```
+
 Se bara planen utan att kapa:
 
 ```bash
@@ -240,6 +263,7 @@ stl-cutter printers --add "Min skrivare" --bed 300 300 400 --margin 8
 ## Mer att läsa
 
 * [docs/JOINTS.md](docs/JOINTS.md) — fogtyperna, när de passar och hur du monterar dem
+* [docs/RESIZE.md](docs/RESIZE.md) — ändra mått utan att deformera godset, och vad som inte fungerar
 * [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — hur programmet är byggt
 
 ## Fogtyper som kan föreslås
