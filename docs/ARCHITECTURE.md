@@ -3,9 +3,9 @@
 Detta dokument beskriver modulerna och dataklasserna i `stl_cutter`.
 **Kommande faser ska läsa och uppdatera den här filen.**
 
-Status: alla fem faser är klara — grundstruktur och plana snitt (1), analys och
-rekommendation (2), foggeometri (3), grafiskt gränssnitt (4) samt paketering,
-installation och dokumentation (5).
+Status: alla faser är klara — grundstruktur och plana snitt (1), analys och
+rekommendation (2), foggeometri (3), måttändring (3B), grafiskt gränssnitt (4)
+samt paketering, installation och dokumentation (5).
 
 ## Teknikval (fastställt)
 
@@ -25,6 +25,7 @@ stl_cutter/
     printers.py       # skrivarprofiler (byggvolym, marginal, tolerans)
     analysis.py       # mät snittytan: area, öar, väggtjocklek, rundhet     [fas 2]
     recommender.py    # välj fogtyp utifrån snittytan och monteringsavsikt  [fas 2]
+    resize.py         # ändra ett mått utan att deformera godset            [fas 3B]
     planner.py        # orientering, kandidatplan, poängsättning
     cutter.py         # utför plansnitten, parar ihop grannar, bygger fogar
     exporter.py       # skriver part_NN.stl + split_report.json
@@ -50,12 +51,16 @@ tools/render_joints.py # genererar bilderna
 install.sh            # installation på Kubuntu, idempotent                [fas 5]
 .github/workflows/    # CI: pytest på Python 3.12 + shellcheck             [fas 5]
 docs/JOINTS.md        # fogtyperna för användaren                          [fas 5]
+docs/RESIZE.md        # måttändring för användaren                        [fas 3B]
 ```
 
 Dataflöde:
 
 ```
 fil -> mesh_io.load_mesh  -> MeshInfo
+    -> resize.resize(mesh, target_xyz)     (valfritt, fas 3B)
+         |-> resize.find_prismatic_spans() per axel
+       -> ResizeResult (mesh + AxisResize per axel) + resize_report.json
     -> planner.plan_splits(mesh, printer, assembly_intent)
          |-> analysis.analyse_section()   per kandidatplan
          |-> planner.score_candidate()    väljer bästa läge
@@ -83,6 +88,11 @@ fil -> mesh_io.load_mesh  -> MeshInfo
 | `CutInfo` | `planner` | `index`, `plane`, `analysis`, `score`, `recommendation`, `alternatives` (topp 3), `nominal_position_mm` |
 | `PartBox` | `planner` | `index`, `grid`, `size_mm` — förväntad låda per del, före snitt |
 | `SplitPlan` | `planner` | `cuts`, `part_count`, `part_boxes`, `transform` (4×4), `orientation_name`, `divisions`, `bounds`, `printer_name`, `assembly_intent`; `planes` är en egenskap härledd ur `cuts` |
+| `SectionSignature` | `resize` | `position`, `area`, `perimeter`, `contour_count`, `bbox`, `shape_hash`, `polygon`; `matches()` jämför två tvärsnitt |
+| `PrismaticSpan` | `resize` | `axis`, `start`, `end`, `section_area`, `section_polygon`; härlett `length`, `middle`, `capacity_mm` |
+| `AxisResize` | `resize` | Vad som hände på en axel: `from_mm`, `to_mm`, `mode`, `span_selection`, `spans`, `chosen`, volymförändring väntad/faktisk, `warnings` |
+| `ResizeResult` | `resize` | `mesh`, `axes`, `original_extents_mm`, `target_extents_mm`; härlett `warnings`, `changed` |
+| `ResizeError` | `resize` | `code`, `message` (svenska), `suggestion`, `details`; `ValidationError` är underklassen |
 | `JointParams` | `joints.base` | Alla fogparametrar med defaults; `from_recommendation()` fyller den från fas 2 |
 | `JointResult` | `joints.base` | `mesh_a`, `mesh_b`, `joint_type`, `requested_type`, `applied`, `warnings`, `attempts`; `fell_back` |
 | `PlaneFrame` | `joints.base` | Lokalt system för ett snitt: `origin`, `u` (lång riktning), `v` (kort riktning, glidriktning), `n` (mot del B) |
@@ -358,13 +368,124 @@ rapporterar problem per del; `CutResult.validate()` är genvägen.
 Vid `--dry-run` är `result` `null`. Med `--no-analysis` är `analysis`, `score`,
 `recommendation` `null` och `alternatives` tom.
 
+### Måttändring (fas 3B)
+
+Rak skalning duger inte när ett mått ska ändras: den gör runda hål ovala och
+väggar tjockare. `core/resize.py` letar i stället upp de partier där tvärsnittet
+är **konstant** längs axeln och skjuter in eller tar bort material just där.
+Allt annat lämnas orört. Ordningen i pipelinen är
+`ladda -> resize -> planera snitt -> kapa -> exportera`; måttändringen sker
+alltid före snittplaneringen, eftersom en plan som lagts för de gamla måtten
+inte hör ihop med den nya modellen.
+
+**Att hitta zonerna** — `find_prismatic_spans()` samplar tvärsnitt var `step` mm
+(1 mm som standard) med `trimesh.section` och en **fast** `to_2D`-transform per
+axel. Att transformen är fast är avgörande: två polygoner går bara att jämföra
+om de ligger i samma koordinatsystem, och ett prismatiskt parti kräver att
+tvärsnittet ligger på samma ställe, inte bara har samma form.
+
+Varje tvärsnitt beskrivs av en `SectionSignature`: area, omkrets, antal
+konturer, bounding box och en normaliserad form-hash (avrundade, sorterade
+konturkoordinater). Signaturen är en snabb gallring; den avgörande jämförelsen
+är polygonernas **symmetriska differens**, och den mäts på två sätt:
+
+* relativt arean (`tol`, 0,02 som standard), och
+* som `differensarea / omkrets` — hur långt konturen har flyttat sig i sidled,
+  mot ett **absolut** tak på 0,05 mm (`SECTION_DEVIATION_MM`).
+
+Det absoluta måttet behövs. Ett Ø8-hål som börjar smalna av i en 100 × 40 mm
+platta ändrar arean med under 2 %, och enbart en relativ areatolerans hade
+räknat hålets avslutning som prismatisk — och sedan deformerat hålet. Gränsen
+ligger under vad en 3D-skrivare kan återge.
+
+Tvärsnitten grupperas mot gruppens **första** signatur, inte mot närmaste
+granne: annars glider en långsam avsmalning igenom en signatur i taget och ett
+koniskt parti räknas som prismatiskt. Zoner kortare än 3 mm kastas, och
+resultatet sorteras på längd.
+
+**Att ändra måttet** — `resize_axis(mesh, axis, target_mm, mode, span_selection)`.
+`delta = målmått − nuvarande mått`.
+
+| Läge | Gör |
+|------|-----|
+| `preserve` (standard) | ändrar bara materialet i prismatiska zoner |
+| `scale` | rak icke-uniform skalning; medveten reservutväg som alltid varnar |
+
+| Zonval | Gör |
+|--------|-----|
+| `longest` (standard) | allt i den längsta zonen; räcker den inte till vid avkortning provas nästa, sedan `distribute` |
+| `distribute` | proportionellt mot zonernas längd — behövs när modellen har jämnt fördelade detaljer och symmetrin ska bevaras |
+| `manual` | `span_index` pekar ut zonen |
+
+Positiv delta: snitta mitt i zonen, translatera den bortre halvan `delta` mm,
+extrudera zonens tvärsnittspolygon `delta + 0,05` mm och unionera de tre
+delarna. Negativ delta: två snitt `|delta|` mm isär inom zonen, mittstycket
+kastas, bortre halvan translateras och ett tunt mellanstycke läggs över skarven.
+
+**Överlappet på 0,025 mm per sida** är hela poängen med mellanstycket.
+Koplanära ytor är den vanligaste orsaken till att en boolean går sönder, och
+vid avkortning möts de två halvorna annars i exakt samma plan. Mellanstycket
+ser till att det aldrig händer — även när `delta` är negativ och mellanstycket
+i praktiken bara är 0,05 mm tjockt.
+
+Flera zoner bearbetas **uppifrån och ner** (fallande `start`). Varje ändring
+flyttar allt som ligger ovanför snittet, så en zon längre ner behåller sina
+koordinater bara om den tas efter zonerna över den. Det gör också att varje
+`_Operation` går att uttrycka i **originalets** koordinater, vilket valideringen
+bygger på.
+
+`resize(mesh, target_xyz, ...)` tar axlarna i tur och ordning med **ny analys
+mellan varje axel** — zonerna längs Y är inte desamma efter att X har ändrats.
+
+**Validering (obligatorisk)** — efter varje måttändring, och ingenting levereras
+om någon kontroll fallerar:
+
+1. `is_watertight` och konsekvent winding,
+2. ny bounding box mot målmåttet inom 0,1 mm,
+3. volymförändringen mot `tvärsnittsarea × delta` inom 1 % (med ett absolut golv
+   på 1 mm³ mot flyttalsbrus),
+4. alla tvärsnitt **utanför** de ändrade zonerna jämförs före och efter.
+   `_map_position()` räknar om ett ursprungsläge till var det hamnade, och
+   signaturerna ska stämma.
+
+En trasig mesh som råkar ha rätt mått är sämre än ett tydligt felmeddelande.
+
+**Felhantering** — `ResizeError` bär `code`, `message` på svenska och
+`suggestion`. Hittas ingen zon levereras inget tyst resultat:
+
+> Modellen har inget parti med konstant tvärsnitt längs djupet — måttet kan bara
+> ändras genom skalning, vilket förändrar godstjocklek och hål.
+
+med förslaget att köra `mode="scale"`. Misslyckas en boolean flyttas snittplanet
+1 mm och försöket görs om, max tre gånger (`MAX_BOOLEAN_ATTEMPTS`), innan felet
+kastas.
+
+**Rapport** — `write_resize_report()` skriver `resize_report.json` med
+ursprungsmått, målmått, alla hittade zoner, vilka som användes och med hur
+mycket, faktisk mot väntad volymförändring samt varningar.
+
+**Kommandoraden**
+
+```
+python -m stl_cutter.cli resize modell.stl --y 550 --out modell_550.stl
+python -m stl_cutter.cli resize modell.stl --y 550 --distribute
+python -m stl_cutter.cli analyze-spans modell.stl --axis y
+python -m stl_cutter.cli cut modell.stl --resize-y 550 --printer "Bambu P1S"
+```
+
+`--min-span` höjer gränsen för vad som räknas som en zon, vilket hindrar
+`--distribute` från att också sträcka korta detaljer (ett 8 mm hyllplan är också
+en zon). Se `docs/RESIZE.md` för användarens bild av det hela, inklusive den
+kända begränsningen att upprepade mönster inte multipliceras.
+
 ### Grafiskt gränssnitt (fas 4)
 
 `stl_cutter/gui/` anropar bara det publika kärn-API:et. Startas med
 `python -m stl_cutter.gui` eller konsolskriptet `stl-cutter-gui`.
 
 **Arbetsflöde** — vänsterpanelen läses uppifrån och ner: 1. Modell (öppna eller
-dra-och-släpp, visar mått, volym och om meshen är hel), 2. Skrivare (profil +
+dra-och-släpp, visar mått, volym och om meshen är hel), 1b. Ändra mått (se
+nedan), 2. Skrivare (profil +
 redigerbar byggvolym och marginal, "Spara som ny profil"), 3. Montering (limmas
 / tas isär + tolerans), 4. Förslag (snittabellen, se nedan), 5. Kapa och
 exportera (målmapp + "Kapa modellen"). Högerpanelen är 3D-vyn.
@@ -391,6 +512,25 @@ allt själv.
   med snittet, inte radnumret.
 * En sammanfattningsrad visar antal delar och största delens mått, och varnar i
   rött om någon del inte får plats - innan man kapar.
+
+**Ändra mått (1b)** — nuvarande X/Y/Z visas, med tre inmatningsfält för de
+önskade måtten och en kryssruta "Lås proportioner" (av som standard). "Visa var
+modellen kan sträckas" kör `find_prismatic_spans()` på de axlar användaren har
+ändrat och markerar zonerna i 3D-vyn med gröna genomskinliga lådor
+(`view3d.span_box()` / `ModelView.show_spans()`), med längden utskriven i
+statusrutan. En rullgardin väljer mellan "Lägg till i längsta partiet" och
+"Fördela jämnt över alla partier". "Ändra mått" ersätter modellen i vyn och
+"Ångra" lägger tillbaka originalet.
+
+Hittas ingen zon kastas felet inte vidare till `friendly_error()`: arbetet
+returnerar `ResizeError` som ett **resultat**, så att `_on_resized()` kan visa
+förklaringen tillsammans med kryssrutan "Skala ändå (godstjocklek och hål
+förändras)". Den är omarkerad och kräver ett aktivt val — modellen rörs inte
+förrän användaren kryssar i den och trycker igen.
+
+`_after_model_changed()` nollställer plan, snittabell och resultat varje gång
+modellen byts ut. Måttändringen sker före snittplaneringen, och en plan som
+lagts för de gamla måtten hör inte ihop med den nya modellen.
 
 **Trådar** — `gui.workers.Worker` är en `QThread` som kör en funktion vilken tar
 emot ett `progress`-argument. Kärnan anropar callbacken; trycker användaren på

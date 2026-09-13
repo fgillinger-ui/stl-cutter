@@ -78,6 +78,7 @@ def test_window_starts_with_the_workflow_in_order(window):
 
     assert titles == [
         "1. Modell",
+        "1b. Ändra mått",
         "2. Skrivare",
         "3. Montering",
         "4. Förslag",
@@ -1541,3 +1542,139 @@ def test_the_stop_shortens_the_dovetail_in_the_real_geometry(qapp, window, tmp_p
 
     assert through == pytest.approx(50.0, abs=0.3)
     assert stopped < through - 4.0, "stoppkanten ska korta laxstjärten"
+
+
+# --------------------------------------------------------------------------
+# 1b. Ändra mått (fas 3B)
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture
+def sphere_file(tmp_path) -> Path:
+    """Ett klot har inget parti med konstant tvärsnitt."""
+    import trimesh
+
+    path = tmp_path / "klot.stl"
+    mesh_io.save_stl(trimesh.creation.icosphere(subdivisions=3, radius=100.0), path)
+    return path
+
+
+def load(qapp, window, path) -> None:
+    window.load_model(path)
+    wait_for_worker(qapp, window)
+
+
+def test_the_measurements_are_shown_and_prefilled(qapp, window, model_file):
+    load(qapp, window, model_file)
+    assert "600" in window.current_size_label.text()
+    values = [spin.value() for spin in window.target_spins]
+    assert values == pytest.approx([600.0, 200.0, 100.0], abs=0.1)
+
+
+def test_locking_the_ratio_changes_all_three(qapp, window, model_file):
+    load(qapp, window, model_file)
+    window.lock_ratio.setChecked(True)
+    window.target_x.setValue(1200.0)
+    assert window.target_y.value() == pytest.approx(400.0, abs=0.1)
+    assert window.target_z.value() == pytest.approx(200.0, abs=0.1)
+
+
+def test_the_ratio_is_unlocked_by_default(qapp, window, model_file):
+    load(qapp, window, model_file)
+    assert not window.lock_ratio.isChecked()
+    window.target_x.setValue(1200.0)
+    assert window.target_y.value() == pytest.approx(200.0, abs=0.1)
+
+
+def test_showing_the_spans_marks_them_in_the_view(qapp, window, model_file):
+    load(qapp, window, model_file)
+    window.target_x.setValue(900.0)
+    window.show_spans()
+    wait_for_worker(qapp, window)
+    assert window.spans
+    assert window.view.showing_spans
+    assert "parti" in window.status_box.toPlainText()
+
+
+def test_resizing_replaces_the_model_and_undo_restores_it(qapp, window, model_file):
+    load(qapp, window, model_file)
+    before = window.mesh_info.mesh
+
+    window.target_x.setValue(900.0)
+    window.start_resize()
+    wait_for_worker(qapp, window)
+
+    assert float(window.mesh_info.extents_mm[0]) == pytest.approx(900.0, abs=0.1)
+    assert window.mesh_info.mesh is not before
+    assert window.undo_resize_button.isEnabled()
+    assert "900" in window.current_size_label.text()
+
+    window.undo_resize()
+    assert window.mesh_info.mesh is before
+    assert float(window.mesh_info.extents_mm[0]) == pytest.approx(600.0, abs=0.1)
+    assert not window.undo_resize_button.isEnabled()
+
+
+def test_resizing_clears_an_earlier_analysis(qapp, window, model_file):
+    load(qapp, window, model_file)
+    window.start_analysis()
+    wait_for_worker(qapp, window)
+    assert window.plan is not None
+
+    window.target_x.setValue(900.0)
+    window.start_resize()
+    wait_for_worker(qapp, window)
+
+    assert window.plan is None
+    assert window.cut_table.rowCount() == 0
+    assert not window.cut_button.isEnabled()
+
+
+def test_resizing_nothing_says_so(qapp, window, model_file):
+    load(qapp, window, model_file)
+    window.start_resize()
+    assert window.worker is None or not window.worker.isRunning()
+    assert "Ändra minst ett" in window.status_box.toPlainText()
+
+
+def test_a_sphere_offers_the_scale_checkbox_unticked(qapp, window, sphere_file):
+    load(qapp, window, sphere_file)
+    # isVisible() är falskt så länge fönstret inte visas - isHidden() speglar
+    # i stället det uttryckliga setVisible(False), vilket är det vi menar.
+    assert window.scale_anyway.isHidden()
+
+    window.target_y.setValue(250.0)
+    window.start_resize()
+    wait_for_worker(qapp, window)
+
+    assert "konstant tvärsnitt" in window.status_box.toPlainText()
+    assert not window.scale_anyway.isHidden()
+    assert not window.scale_anyway.isChecked()  # kräver ett aktivt val
+    # Modellen är orörd tills användaren väljer skalning.
+    assert float(window.mesh_info.extents_mm[1]) == pytest.approx(200.0, abs=0.5)
+
+    window.scale_anyway.setChecked(True)
+    window.start_resize()
+    wait_for_worker(qapp, window)
+    assert float(window.mesh_info.extents_mm[1]) == pytest.approx(250.0, abs=0.5)
+    assert "ovala" in window.status_box.toPlainText()
+
+
+def test_the_span_dropdown_offers_both_strategies(window):
+    values = [window.span_selection.itemData(i) for i in range(window.span_selection.count())]
+    assert values == ["longest", "distribute"]
+
+
+def test_span_box_covers_the_model_across_the_axis():
+    from types import SimpleNamespace
+
+    from stl_cutter.gui.view3d import span_box
+
+    bounds = np.array([[-50.0, -100.0, -20.0], [50.0, 100.0, 20.0]])
+    span = SimpleNamespace(axis=1, start=-80.0, end=60.0)
+    low, high = span_box(span, bounds)
+
+    assert low[1] == pytest.approx(-80.0)
+    assert high[1] == pytest.approx(60.0)
+    assert low[0] < -50.0 and high[0] > 50.0  # sticker utanför så att den syns
+    assert low[2] < -20.0 and high[2] > 20.0

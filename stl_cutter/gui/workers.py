@@ -13,6 +13,7 @@ from typing import Callable
 from PySide6.QtCore import QThread, Signal
 
 from ..core.progress import Cancelled
+from ..core.resize import ResizeError
 
 log = logging.getLogger(__name__)
 
@@ -22,6 +23,9 @@ def friendly_error(exc: BaseException) -> str:
 
     Hela stacktracen hamnar i loggfilen - användaren ska aldrig se den.
     """
+    if isinstance(exc, ResizeError):
+        # Måttändringen har redan formulerat sig på svenska, med förslag.
+        return f"{exc.message} {exc.suggestion}".strip()
     if isinstance(exc, FileNotFoundError):
         return "Filen gick inte att hitta. Har den flyttats eller tagits bort?"
     if isinstance(exc, PermissionError):

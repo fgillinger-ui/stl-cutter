@@ -25,6 +25,13 @@ MODEL_COLOR_ON_DARK = (0.68, 0.72, 0.78, 1.0)
 MODEL_COLOR_ON_LIGHT = (0.42, 0.48, 0.58, 1.0)
 
 PLANE_COLOR = (0.95, 0.55, 0.15, 0.28)
+
+#: Prismatiska partier - där modellen går att sträcka. Grönt och genomskinligt.
+SPAN_COLOR = (0.25, 0.80, 0.35, 0.22)
+SPAN_EDGE_COLOR = (0.15, 0.65, 0.25, 0.9)
+
+#: Hur långt utanför modellen zonmarkeringen ritas, som andel av storleken.
+SPAN_MARGIN = 0.02
 BED_COLOR_ON_DARK = (0.45, 0.5, 0.55, 0.6)
 BED_COLOR_ON_LIGHT = (0.30, 0.34, 0.40, 0.7)
 
@@ -109,6 +116,51 @@ def plane_quad(plane, bounds: np.ndarray, margin: float = PLANE_MARGIN):
     return vertices, faces
 
 
+def span_box(span, bounds, margin: float = SPAN_MARGIN):
+    """Hörnen på lådan som markerar ett prismatiskt parti.
+
+    Lådan täcker modellens hela tvärsnitt och sträcker sig mellan partiets
+    start och slut längs dess axel, en aning utanför modellen så att den syns.
+    """
+    bounds = np.asarray(bounds, dtype=float)
+    size = bounds[1] - bounds[0]
+    low = bounds[0] - size * margin
+    high = bounds[1] + size * margin
+    axis = int(span.axis)
+    low[axis] = float(span.start)
+    high[axis] = float(span.end)
+    return low, high
+
+
+def box_mesh(low, high):
+    """Vertices och faces för en axelparallell låda."""
+    low = np.asarray(low, dtype=float)
+    high = np.asarray(high, dtype=float)
+    corners = np.array(
+        [
+            [low[0], low[1], low[2]],
+            [high[0], low[1], low[2]],
+            [high[0], high[1], low[2]],
+            [low[0], high[1], low[2]],
+            [low[0], low[1], high[2]],
+            [high[0], low[1], high[2]],
+            [high[0], high[1], high[2]],
+            [low[0], high[1], high[2]],
+        ]
+    )
+    faces = np.array(
+        [
+            [0, 1, 2], [0, 2, 3],
+            [4, 6, 5], [4, 7, 6],
+            [0, 5, 1], [0, 4, 5],
+            [1, 6, 2], [1, 5, 6],
+            [2, 7, 3], [2, 6, 7],
+            [3, 4, 0], [3, 7, 4],
+        ]
+    )
+    return corners, faces
+
+
 def bed_grid(printer, spacing_mm: float = 20.0):
     """Rutnät som visar byggplattan: (storlek, avstånd)."""
     size = (float(printer.bed_x), float(printer.bed_y), 1.0)
@@ -142,6 +194,7 @@ class ModelView(gl.GLViewWidget):
         self.setBackgroundColor(LIGHT_BACKGROUND if self._light else DARK_BACKGROUND)
         self._model_item = None
         self._plane_items: list = []
+        self._span_items: list = []
         self._part_items: list = []
         self._part_centres = np.zeros((0, 3))
         self._bed_item = None
@@ -178,6 +231,7 @@ class ModelView(gl.GLViewWidget):
     def show_model(self, mesh: trimesh.Trimesh) -> None:
         self.clear_parts()
         self.clear_planes()
+        self.clear_spans()
         if self._model_item is not None:
             self.removeItem(self._model_item)
         self._model_item = gl.GLMeshItem(
@@ -224,6 +278,34 @@ class ModelView(gl.GLViewWidget):
             self.removeItem(item)
         self._plane_items = []
         self._planes = []
+
+    # -- prismatiska partier ----------------------------------------------
+
+    def show_spans(self, spans, bounds) -> None:
+        """Markera de partier där modellen går att sträcka, i grönt."""
+        self.clear_spans()
+        for span in spans:
+            low, high = span_box(span, bounds)
+            vertices, faces = box_mesh(low, high)
+            item = gl.GLMeshItem(
+                meshdata=gl.MeshData(vertexes=vertices, faces=faces),
+                smooth=False,
+                color=SPAN_COLOR,
+                glOptions="additive",
+                drawEdges=True,
+                edgeColor=SPAN_EDGE_COLOR,
+            )
+            self.addItem(item)
+            self._span_items.append(item)
+
+    def clear_spans(self) -> None:
+        for item in self._span_items:
+            self.removeItem(item)
+        self._span_items = []
+
+    @property
+    def showing_spans(self) -> bool:
+        return bool(self._span_items)
 
     # -- delarna ----------------------------------------------------------
 
@@ -515,6 +597,7 @@ class ModelView(gl.GLViewWidget):
     def clear_all(self) -> None:
         self.clear_parts()
         self.clear_planes()
+        self.clear_spans()
         if self._model_item is not None:
             self.removeItem(self._model_item)
             self._model_item = None

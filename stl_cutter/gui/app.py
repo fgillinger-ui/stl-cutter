@@ -41,7 +41,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..core import exporter, mesh_io
+from ..core import exporter, mesh_io, resize as resize_core
 from ..core.cutter import cut_mesh, parts_fit
 from ..core.planner import (
     AXIS_NAMES,
@@ -52,6 +52,7 @@ from ..core.planner import (
     plan_splits,
 )
 from ..core.printers import PrinterProfile, get_printer, load_printers, save_profile
+from ..core.resize import ResizeError
 from ..core.recommender import JOINT_TYPES, build_recommendation
 from . import joint_images
 from .joint_help import JointHelpDialog
@@ -73,6 +74,12 @@ JOINT_LABELS = {
 }
 
 MAX_EXPLODE_MM = 200
+
+#: Val i rullgardinen för hur måttändringen ska fördelas.
+SPAN_SELECTIONS = (
+    ("longest", "Lägg till i längsta partiet"),
+    ("distribute", "Fördela jämnt över alla partier"),
+)
 
 #: Bredd på bilden bredvid motiveringen.
 JOINT_THUMBNAIL_WIDTH = 180
@@ -100,6 +107,9 @@ class MainWindow(QMainWindow):
         self.mesh_info = None
         self.plan = None
         self.result = None
+        #: Modellen som den såg ut innan senaste måttändringen, för Ångra.
+        self.mesh_before_resize = None
+        self.spans = None
         self.worker: Worker | None = None
         #: Sant medan tabellen ritas om, så att signaler inte studsar tillbaka.
         self._filling = False
@@ -127,6 +137,7 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(panel)
         layout.setSpacing(6)
         layout.addWidget(self._section_model())
+        layout.addWidget(self._section_resize())
         layout.addWidget(self._section_printer())
         layout.addWidget(self._section_assembly())
         layout.addWidget(self._section_suggestions())
@@ -163,6 +174,63 @@ class MainWindow(QMainWindow):
         self.model_label = QLabel("Ingen modell öppnad.")
         self.model_label.setWordWrap(True)
         layout.addWidget(self.model_label)
+        return box
+
+    def _section_resize(self) -> QGroupBox:
+        """1b. Ändra mått - sker alltid före snittplaneringen."""
+        box = QGroupBox("1b. Ändra mått")
+        layout = QVBoxLayout(box)
+
+        self.current_size_label = QLabel("Nuvarande mått: –")
+        layout.addWidget(self.current_size_label)
+
+        self.target_x = self._spin(1, 10000, "")
+        self.target_y = self._spin(1, 10000, "")
+        self.target_z = self._spin(1, 10000, "")
+        self.target_spins = (self.target_x, self.target_y, self.target_z)
+        target_row = QHBoxLayout()
+        target_row.addWidget(QLabel("Önskat (mm):"))
+        for label, spin in zip(("X", "Y", "Z"), self.target_spins):
+            spin.setToolTip({"X": "Bredd", "Y": "Djup", "Z": "Höjd"}[label])
+            spin.valueChanged.connect(partial(self._on_target_changed, spin))
+            target_row.addWidget(QLabel(label))
+            target_row.addWidget(spin, 1)
+        layout.addLayout(target_row)
+
+        self.lock_ratio = QCheckBox("Lås proportioner")
+        self.lock_ratio.setToolTip(
+            "Ändrar alla tre måtten i samma förhållande. Av som standard - "
+            "vanligen vill man ändra ett enda mått."
+        )
+        layout.addWidget(self.lock_ratio)
+
+        self.show_spans_button = QPushButton("Visa var modellen kan sträckas")
+        self.show_spans_button.clicked.connect(self.show_spans)
+        self.show_spans_button.setEnabled(False)
+        layout.addWidget(self.show_spans_button)
+
+        self.span_selection = QComboBox()
+        for value, label in SPAN_SELECTIONS:
+            self.span_selection.addItem(label, value)
+        layout.addWidget(self.span_selection)
+
+        self.scale_anyway = QCheckBox("Skala ändå (godstjocklek och hål förändras)")
+        self.scale_anyway.setChecked(False)
+        self.scale_anyway.setVisible(False)
+        self.scale_anyway.toggled.connect(self._on_scale_anyway)
+        layout.addWidget(self.scale_anyway)
+
+        button_row = QHBoxLayout()
+        self.resize_button = QPushButton("Ändra mått")
+        self.resize_button.clicked.connect(self.start_resize)
+        self.resize_button.setEnabled(False)
+        button_row.addWidget(self.resize_button, 1)
+        self.undo_resize_button = QPushButton("Ångra")
+        self.undo_resize_button.setToolTip("Återställ modellen som den var.")
+        self.undo_resize_button.clicked.connect(self.undo_resize)
+        self.undo_resize_button.setEnabled(False)
+        button_row.addWidget(self.undo_resize_button)
+        layout.addLayout(button_row)
         return box
 
     def _section_printer(self) -> QGroupBox:
@@ -533,6 +601,9 @@ class MainWindow(QMainWindow):
             self.cut_button,
             self.printer_combo,
             self.save_profile_button,
+            self.resize_button,
+            self.show_spans_button,
+            self.undo_resize_button,
         ):
             widget.setEnabled(not busy and self._enabled_when_idle(widget))
 
@@ -541,6 +612,10 @@ class MainWindow(QMainWindow):
             return self.mesh_info is not None
         if widget is self.cut_button:
             return self.plan is not None
+        if widget in (self.resize_button, self.show_spans_button):
+            return self.mesh_info is not None
+        if widget is self.undo_resize_button:
+            return self.mesh_before_resize is not None
         return True
 
     def on_progress(self, fraction: float, message: str) -> None:
@@ -612,6 +687,14 @@ class MainWindow(QMainWindow):
         self.straighten_button.setEnabled(True)
         self.reset_cuts_button.setEnabled(True)
         self.plan_summary.setText("")
+        self.mesh_before_resize = None
+        self.spans = None
+        self.undo_resize_button.setEnabled(False)
+        self.resize_button.setEnabled(True)
+        self.show_spans_button.setEnabled(True)
+        self.scale_anyway.setVisible(False)
+        self.scale_anyway.setChecked(False)
+        self._update_size_fields()
 
         x, y, z = info.extents_mm
         state = (
@@ -659,6 +742,197 @@ class MainWindow(QMainWindow):
             if path.suffix.lower() in mesh_io.SUPPORTED_INPUT:
                 return path
         return None
+
+    # ------------------------------------------------------------------
+    # 1b. Ändra mått
+    # ------------------------------------------------------------------
+
+    def _update_size_fields(self) -> None:
+        """Skriv modellens mått i etiketten och i inmatningsfälten."""
+        if self.mesh_info is None:
+            self.current_size_label.setText("Nuvarande mått: –")
+            return
+        x, y, z = self.mesh_info.extents_mm
+        self.current_size_label.setText(
+            f"Nuvarande mått: {x:.1f} × {y:.1f} × {z:.1f} mm"
+        )
+        self._filling = True
+        try:
+            for spin, value in zip(self.target_spins, (x, y, z)):
+                spin.setValue(float(value))
+        finally:
+            self._filling = False
+
+    def _current_extents(self) -> tuple[float, float, float]:
+        return tuple(float(v) for v in self.mesh_info.extents_mm)
+
+    def _on_target_changed(self, spin, value: float) -> None:
+        """Håll proportionerna om kryssrutan är i, annars gör ingenting."""
+        if self._filling or self.mesh_info is None or not self.lock_ratio.isChecked():
+            return
+        index = self.target_spins.index(spin)
+        current = self._current_extents()
+        if current[index] <= 0:
+            return
+        factor = float(value) / current[index]
+        self._filling = True
+        try:
+            for other_index, other in enumerate(self.target_spins):
+                if other_index != index:
+                    other.setValue(current[other_index] * factor)
+        finally:
+            self._filling = False
+
+    def _requested_targets(self) -> list[float | None]:
+        """Måtten som faktiskt har ändrats; oförändrade blir None."""
+        current = self._current_extents()
+        targets: list[float | None] = []
+        for index, spin in enumerate(self.target_spins):
+            wanted = float(spin.value())
+            targets.append(None if abs(wanted - current[index]) < 0.05 else wanted)
+        return targets
+
+    def _axes_of_interest(self) -> list[int]:
+        """Axlarna användaren vill ändra - eller alla tre om inget är ifyllt."""
+        targets = self._requested_targets()
+        axes = [index for index, target in enumerate(targets) if target is not None]
+        return axes or [0, 1, 2]
+
+    def show_spans(self) -> None:
+        """Visa de prismatiska partierna i 3D-vyn, i grönt."""
+        if self.mesh_info is None:
+            return
+        mesh = self.mesh_info.mesh
+        axes = self._axes_of_interest()
+
+        def work(progress=None):
+            found = []
+            for position, axis in enumerate(axes):
+                progress(position / len(axes), f"Söker partier längs {AXIS_NAMES[axis]}")
+                found.extend(resize_core.find_prismatic_spans(mesh, axis, progress=None))
+            progress(1.0, "Klart")
+            return found
+
+        self._start(work, self._on_spans_found, "Söker partier med konstant tvärsnitt…")
+
+    def _on_spans_found(self, spans) -> None:
+        self.spans = spans
+        self.view.show_model(self.mesh_info.mesh)
+        if not spans:
+            self._no_span_warning()
+            return
+        self.view.show_spans(spans, self.mesh_info.mesh.bounds)
+        self.scale_anyway.setVisible(False)
+        self.status(f"{len(spans)} parti(er) med konstant tvärsnitt:")
+        for index, span in enumerate(spans, start=1):
+            self.status(f"  {index}. {span.describe()}")
+
+    def _no_span_warning(self, message: str | None = None) -> None:
+        """Ingen zon hittad: visa varningen och kräv ett aktivt val."""
+        self.status(
+            message
+            or "Modellen har inget parti med konstant tvärsnitt längs den axeln — "
+            "måttet kan bara ändras genom skalning, vilket förändrar godstjocklek "
+            "och hål.",
+            error=True,
+        )
+        self.scale_anyway.setVisible(True)
+        self.scale_anyway.setChecked(False)
+
+    def _on_scale_anyway(self, checked: bool) -> None:
+        if checked:
+            self.status(
+                "Skalning vald: godstjocklek, hörnradier och hål ändras i samma "
+                "förhållande. Runda hål blir ovala."
+            )
+
+    def start_resize(self) -> None:
+        if self.mesh_info is None:
+            return
+        targets = self._requested_targets()
+        if all(target is None for target in targets):
+            self.status("Ändra minst ett av måtten först.", error=True)
+            return
+
+        mesh = self.mesh_info.mesh
+        mode = "scale" if self.scale_anyway.isChecked() else "preserve"
+        selection = self.span_selection.currentData() or "longest"
+
+        def work(progress=None):
+            try:
+                return resize_core.resize(
+                    mesh,
+                    targets,
+                    mode=mode,
+                    span_selection=selection,
+                    progress=progress,
+                )
+            except ResizeError as error:
+                # Felet bärs tillbaka som ett resultat i stället för att kastas,
+                # så att gränssnittet kan visa förklaringen och kryssrutan
+                # "Skala ändå" i stället för ett anonymt felmeddelande.
+                return error
+
+        self._start(work, self._on_resized, "Ändrar mått…")
+
+    def _on_resized(self, outcome) -> None:
+        if isinstance(outcome, ResizeError):
+            self._no_span_warning(f"{outcome.message} {outcome.suggestion}".strip())
+            return
+
+        self.mesh_before_resize = self.mesh_info.mesh
+        self.mesh_info = self._reload_info(outcome.mesh)
+        self.undo_resize_button.setEnabled(True)
+        for entry in outcome.axes:
+            self.status(
+                f"{AXIS_NAMES[entry.axis]}: {entry.from_mm:.1f} → {entry.to_mm:.1f} mm "
+                f"({entry.delta_mm:+.1f} mm)"
+            )
+        for warning in outcome.warnings:
+            self.status(f"Varning: {warning}", error=True)
+        self._after_model_changed()
+        self.status("Måtten är ändrade. Kör Analysera igen för att planera snitten.")
+
+    def undo_resize(self) -> None:
+        if self.mesh_before_resize is None:
+            return
+        self.mesh_info = self._reload_info(self.mesh_before_resize)
+        self.mesh_before_resize = None
+        self.undo_resize_button.setEnabled(False)
+        self._after_model_changed()
+        self.status("Måttändringen är ångrad - modellen är tillbaka som den var.")
+
+    def _reload_info(self, mesh):
+        """Bygg en ny MeshInfo för en ändrad mesh, med samma sökväg som förut."""
+        info = self.mesh_info
+        return mesh_io.MeshInfo(
+            path=info.path,
+            mesh=mesh,
+            watertight=bool(mesh.is_watertight),
+            winding_consistent=bool(mesh.is_winding_consistent),
+            volume_mm3=float(abs(mesh.volume)),
+            extents_mm=tuple(float(v) for v in mesh.extents),
+            repairs=list(info.repairs),
+            open_edges=mesh_io.open_edge_count(mesh),
+        )
+
+    def _after_model_changed(self) -> None:
+        """Modellen har bytts ut: allt som beror på den gamla nollställs.
+
+        Måttändringen sker före snittplaneringen. En plan som lades för de
+        gamla måtten hör inte ihop med den nya modellen, och att låta den ligga
+        kvar hade varit värre än att be användaren analysera om.
+        """
+        self.plan = None
+        self.result = None
+        self.spans = None
+        self.cut_table.setRowCount(0)
+        self.plan_summary.setText("")
+        self.cut_button.setEnabled(False)
+        self.preview_button.setEnabled(False)
+        self.view.show_model(self.mesh_info.mesh)
+        self.on_bed_toggled()
+        self._update_size_fields()
 
     # ------------------------------------------------------------------
     # 4. Analys och förslag
