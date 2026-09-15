@@ -41,6 +41,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..core import assembly as assembly_core
 from ..core import exporter, mesh_io, resize as resize_core
 from ..core.cutter import cut_mesh, parts_fit
 from ..core.planner import (
@@ -110,6 +111,9 @@ class MainWindow(QMainWindow):
         self.result = None
         #: Modellen som den såg ut innan senaste måttändringen, för Ångra.
         self.mesh_before_resize = None
+        #: Filens objekt var för sig. Ett enda objekt är det vanliga; flera
+        #: förekommer när en CAD-fil innehåller delar som hör ihop.
+        self.parts: list = []
         self.spans = None
         self.worker: Worker | None = None
         #: Sant medan tabellen ritas om, så att signaler inte studsar tillbaka.
@@ -184,6 +188,32 @@ class MainWindow(QMainWindow):
 
         self.current_size_label = QLabel("Nuvarande mått: –")
         layout.addWidget(self.current_size_label)
+
+        # Raden syns bara när filen innehåller flera objekt. Med ett enda
+        # objekt vore den bara i vägen.
+        self.parts_row = QWidget()
+        parts_layout = QHBoxLayout(self.parts_row)
+        parts_layout.setContentsMargins(0, 0, 0, 0)
+        parts_layout.addWidget(QLabel("Objekt:"))
+        self.part_combo = QComboBox()
+        self.part_combo.setToolTip(
+            "Måttet nedan gäller det här objektet. Övriga objekt följer med."
+        )
+        self.part_combo.currentIndexChanged.connect(self._on_part_changed)
+        parts_layout.addWidget(self.part_combo, 1)
+        layout.addWidget(self.parts_row)
+
+        self.link_parts = QCheckBox("Låt övriga objekt följa med symmetriskt")
+        self.link_parts.setChecked(True)
+        self.link_parts.setToolTip(
+            "Övriga objekt får samma tillskott i millimeter - inte samma mått.\n"
+            "En hylla på 230 mm och en bakplatta på 250 mm som ska till 270 ger\n"
+            "alltså plattan 290 mm, så att laxstjärtar och spår fortfarande\n"
+            "sitter mitt för varandra."
+        )
+        layout.addWidget(self.link_parts)
+        self.parts_row.setVisible(False)
+        self.link_parts.setVisible(False)
 
         self.target_x = self._spin(1, 10000, "")
         self.target_y = self._spin(1, 10000, "")
@@ -684,6 +714,7 @@ class MainWindow(QMainWindow):
 
     def _on_model_loaded(self, info) -> None:
         self.mesh_info = info
+        self._rebuild_parts()
         self.plan = None
         self.result = None
         self.cut_table.setRowCount(0)
@@ -766,6 +797,46 @@ class MainWindow(QMainWindow):
             f"Volym {info.volume_mm3 / 1000:.1f} cm³<br>{state}"
         )
 
+    def _rebuild_parts(self) -> None:
+        """Dela upp den inlästa modellen i objekt och fyll rullgardinen.
+
+        Misslyckas uppdelningen är det inte värt att fälla hela inläsningen -
+        då får filen räknas som ett enda objekt, precis som förut.
+        """
+        self.parts = []
+        if self.mesh_info is not None:
+            try:
+                self.parts = assembly_core.split_parts(self.mesh_info.mesh)
+            except Exception:  # pragma: no cover - försvar mot udda geometri
+                log.exception("Kunde inte dela upp modellen i objekt")
+                self.parts = []
+
+        several = len(self.parts) > 1
+        self._filling = True
+        try:
+            self.part_combo.clear()
+            for part in self.parts:
+                self.part_combo.addItem(part.summary())
+        finally:
+            self._filling = False
+        self.parts_row.setVisible(several)
+        self.link_parts.setVisible(several)
+        if several:
+            self.status(
+                f"Filen innehåller {len(self.parts)} separata objekt. "
+                "Måttet gäller det valda; övriga följer med."
+            )
+
+    def _selected_part(self) -> int:
+        index = self.part_combo.currentIndex()
+        return index if 0 <= index < len(self.parts) else 0
+
+    def _on_part_changed(self, _index: int) -> None:
+        """Byter man objekt ska måttfälten visa det objektets mått."""
+        if self._filling:
+            return
+        self._update_size_fields()
+
     def _update_size_fields(self) -> None:
         """Skriv modellens mått i etiketten och i inmatningsfälten.
 
@@ -777,10 +848,16 @@ class MainWindow(QMainWindow):
         if self.mesh_info is None:
             self.current_size_label.setText("Nuvarande mått: –")
             return
-        x, y, z = self.mesh_info.extents_mm
-        self.current_size_label.setText(
-            f"Nuvarande mått: {x:.1f} × {y:.1f} × {z:.1f} mm"
-        )
+        x, y, z = self._current_extents()
+        if len(self.parts) > 1:
+            name = self.parts[self._selected_part()].name
+            self.current_size_label.setText(
+                f"Nuvarande mått ({name}): {x:.1f} × {y:.1f} × {z:.1f} mm"
+            )
+        else:
+            self.current_size_label.setText(
+                f"Nuvarande mått: {x:.1f} × {y:.1f} × {z:.1f} mm"
+            )
         self._filling = True
         try:
             for spin, value in zip(self.target_spins, (x, y, z)):
@@ -789,6 +866,9 @@ class MainWindow(QMainWindow):
             self._filling = False
 
     def _current_extents(self) -> tuple[float, float, float]:
+        """Måtten som fälten gäller: det valda objektets, inte hela filens."""
+        if len(self.parts) > 1:
+            return tuple(float(v) for v in self.parts[self._selected_part()].extents_mm)
         return tuple(float(v) for v in self.mesh_info.extents_mm)
 
     def _on_target_changed(self, spin, value: float) -> None:
@@ -922,6 +1002,10 @@ class MainWindow(QMainWindow):
         mode = "scale" if self.scale_anyway.isChecked() else "preserve"
         selection = self.span_selection.currentData() or "auto"
 
+        if len(self.parts) > 1 and self.link_parts.isChecked():
+            self._start_linked_resize(targets, mode, selection)
+            return
+
         def work(progress=None):
             try:
                 return resize_core.resize(
@@ -938,6 +1022,65 @@ class MainWindow(QMainWindow):
                 return error
 
         self._start(work, self._on_resized, "Ändrar mått…")
+
+    def _start_linked_resize(self, targets, mode: str, selection: str) -> None:
+        """Måttändring där filens övriga objekt följer med.
+
+        Axlarna körs en i taget. Varje varv bär ledarens önskade mått, och
+        ``resize_together`` räknar om det till ett tillskott som de övriga
+        objekten får dela.
+        """
+        parts = list(self.parts)
+        leader = self._selected_part()
+
+        def work(progress=None):
+            current = parts
+            reports = []
+            axes = [i for i, target in enumerate(targets) if target is not None]
+            for step, axis in enumerate(axes):
+                if progress is not None:
+                    progress(step / max(len(axes), 1), f"Ändrar {AXIS_NAMES[axis]}…")
+                try:
+                    report = assembly_core.resize_together(
+                        current,
+                        axis=axis,
+                        target_mm=float(targets[axis]),
+                        leader=leader,
+                        mode=mode,
+                        span_selection=selection,
+                    )
+                except ResizeError as error:
+                    return error
+                current = report.parts
+                reports.append(report)
+            return reports
+
+        self._start(work, self._on_linked_resized, "Ändrar mått på alla objekt…")
+
+    def _on_linked_resized(self, outcome) -> None:
+        if isinstance(outcome, ResizeError):
+            self._no_span_warning(f"{outcome.message} {outcome.suggestion}".strip())
+            return
+        if not outcome:
+            return
+
+        parts = outcome[-1].parts
+        merged = trimesh.util.concatenate([part.mesh for part in parts])
+        self.mesh_before_resize = self.mesh_info.mesh
+        self.mesh_info = self._reload_info(merged)
+        self.undo_resize_button.setEnabled(True)
+
+        for report in outcome:
+            for line in assembly_core.describe_assembly(report).splitlines():
+                self.status(line)
+            for note in report.notes:
+                self.status(f"  {note}")
+            for warning in report.warnings:
+                self.status(f"Varning: {warning}", error=True)
+
+        self._rebuild_parts()
+        self._after_model_changed()
+        self.status("Måtten är ändrade. Kör Analysera igen för att planera snitten.")
 
     def _on_resized(self, outcome) -> None:
         if isinstance(outcome, ResizeError):
@@ -965,6 +1108,9 @@ class MainWindow(QMainWindow):
         self.mesh_info = self._reload_info(self.mesh_before_resize)
         self.mesh_before_resize = None
         self.undo_resize_button.setEnabled(False)
+        # Objektlistan bär måtten och måste tillbaka den också, annars står
+        # den kvar och visar de ändrade objekten.
+        self._rebuild_parts()
         self._after_model_changed()
         self.status("Måttändringen är ångrad - modellen är tillbaka som den var.")
 
