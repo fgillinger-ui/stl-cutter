@@ -15,6 +15,7 @@ import logging
 import sys
 from pathlib import Path
 
+from .core import assembly as assembly_core
 from .core import exporter, mesh_io, resize as resize_core
 from .core.cutter import cut_mesh, parts_fit
 from .core.planner import plan_splits
@@ -87,6 +88,19 @@ def _add_resize_options(parser: argparse.ArgumentParser) -> None:
         default=resize_core.MIN_SPAN_LENGTH_MM,
         help="Kortaste parti som räknas som prismatiskt, i mm. Höj det för att "
         "hindra --distribute från att också sträcka korta detaljer som hyllplan.",
+    )
+    parser.add_argument(
+        "--part",
+        type=int,
+        default=1,
+        metavar="N",
+        help="Vilket objekt måttet gäller när filen innehåller flera (1 och uppåt, "
+        "vänster till höger). Övriga objekt får samma tillskott i mm.",
+    )
+    parser.add_argument(
+        "--no-link",
+        action="store_true",
+        help="Ändra bara det valda objektet och lämna filens övriga objekt orörda.",
     )
 
 
@@ -262,6 +276,10 @@ def _cmd_resize(args: argparse.Namespace) -> int:
         print(f"  reparation: {repair}")
 
     selection, span_index = _span_selection(args)
+
+    parts = assembly_core.split_parts(info.mesh)
+    if len(parts) > 1 and not args.no_link:
+        return _resize_linked(args, parts, targets, selection, span_index)
     result = resize_core.resize(
         info.mesh,
         targets,
@@ -286,6 +304,70 @@ def _cmd_resize(args: argparse.Namespace) -> int:
     x, y, z = result.mesh.extents
     print(f"\nSkrev {out} ({x:.1f} x {y:.1f} x {z:.1f} mm)")
     print(f"Rapport: {report}")
+    return 0
+
+
+def _resize_linked(args, parts, targets, selection, span_index) -> int:
+    """Måttändring av en fil med flera objekt.
+
+    Måttet gäller objektet som `--part` pekar ut (det första som standard).
+    Övriga får samma tillskott, inte samma mått - se `core.assembly`.
+    """
+    leader = args.part - 1
+    if not 0 <= leader < len(parts):
+        print(
+            f"Filen har {len(parts)} objekt, så --part måste vara 1-{len(parts)}.",
+            file=sys.stderr,
+        )
+        return 2
+
+    print(f"\nFilen innehåller {len(parts)} separata objekt:")
+    for index, part in enumerate(parts, start=1):
+        mark = " <- måttet gäller detta" if index - 1 == leader else ""
+        print(f"  {index}. {part.summary()}{mark}")
+
+    current = parts
+    for axis, target in enumerate(targets):
+        if target is None:
+            continue
+        try:
+            report = assembly_core.resize_together(
+                current,
+                axis=axis,
+                target_mm=float(target),
+                leader=leader,
+                mode=args.mode,
+                span_selection=selection,
+                span_index=span_index,
+                step=args.step,
+                tol=args.tol,
+                min_span_mm=args.min_span,
+            )
+        except ResizeError as error:
+            print(f"\n{error.message} {error.suggestion}".rstrip(), file=sys.stderr)
+            return 1
+        current = report.parts
+        print()
+        print(assembly_core.describe_assembly(report))
+        for note in report.notes:
+            print(f"  {note}")
+        for warning in report.warnings:
+            print(f"  VARNING: {warning}")
+
+    out = args.out or args.model.with_name(f"{args.model.stem}_resized.stl")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    stem, suffix = out.stem, out.suffix or ".stl"
+    written = []
+    for index, part in enumerate(current, start=1):
+        target_path = out.with_name(f"{stem}_{index:02d}{suffix}")
+        if suffix.lower() == ".3mf":
+            written.append(mesh_io.save_3mf(part.mesh, target_path))
+        else:
+            written.append(mesh_io.save_stl(part.mesh, target_path))
+    print("\nSkrev:")
+    for path, part in zip(written, current):
+        x, y, z = part.extents_mm
+        print(f"  {path} ({x:.1f} x {y:.1f} x {z:.1f} mm)")
     return 0
 
 

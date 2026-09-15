@@ -187,6 +187,18 @@ stl-cutter analyze-spans modell.stl --axis y
 stl-cutter resize modell.stl --y 550 --out modell_550.stl
 ```
 
+Innehåller filen flera objekt som hör ihop — en hylla och dess bakplatta, en
+låda och dess lock — pekar `--part` ut vilket måttet gäller. Övriga objekt får
+samma **tillskott** i millimeter, inte samma mått, så att spår och laxstjärtar
+fortsätter sitta mitt för varandra:
+
+```bash
+stl-cutter resize nas.3mf --x 270 --part 2 --out ut/nas.stl
+```
+
+I gränssnittet dyker då en rullgardin **Objekt** upp i rutan *1b. Ändra mått*.
+Se [docs/RESIZE.md](docs/RESIZE.md#flera-objekt-i-samma-fil).
+
 Ändra måttet och kapa i ett svep:
 
 ```bash

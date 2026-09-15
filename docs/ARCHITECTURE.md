@@ -26,6 +26,7 @@ stl_cutter/
     analysis.py       # mät snittytan: area, öar, väggtjocklek, rundhet     [fas 2]
     recommender.py    # välj fogtyp utifrån snittytan och monteringsavsikt  [fas 2]
     resize.py         # ändra ett mått utan att deformera godset            [fas 3B]
+    assembly.py       # flera objekt i filen som ändrar mått tillsammans
     planner.py        # orientering, kandidatplan, poängsättning
     cutter.py         # utför plansnitten, parar ihop grannar, bygger fogar
     exporter.py       # skriver part_NN.stl + split_report.json
@@ -79,6 +80,8 @@ fil -> mesh_io.load_mesh  -> MeshInfo
 | Klass | Modul | Innehåll |
 |-------|-------|----------|
 | `MeshInfo` | `mesh_io` | `path`, `mesh`, `watertight`, `winding_consistent`, `volume_mm3`, `extents_mm`, `repairs`, `open_edges` |
+| `Part` | `assembly` | `name`, `mesh` – ett objekt i filen |
+| `AssemblyResize` | `assembly` | `parts`, `axis`, `delta_mm`, `entries`, `notes` |
 | `PrinterProfile` | `printers` | `name`, `bed_x/y/z`, `margin_mm` (5), `clearance_mm` (0.15); `usable` = bädd − 2·marginal, `fits(extents)` |
 | `ContourInfo` | `analysis` | `area_mm2`, `perimeter_mm`, `thickness_mm` (största inskrivna cirkelns diameter), `bbox_mm` |
 | `SectionAnalysis` | `analysis` | `position_mm`, `axis`, `area_mm2`, `perimeter_mm`, `contour_count`, `min_wall_mm`, `roundness`, `aspect_ratio`, `bbox_mm`, `contours`, `empty`; egenskaper `cuts_thin_detail`, `is_flat`, `is_round`, `is_elongated` |
