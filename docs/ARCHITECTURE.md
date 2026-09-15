@@ -413,13 +413,24 @@ resultatet sorteras på längd.
 
 | Zonval | Gör |
 |--------|-----|
-| `longest` (standard) | allt i den längsta zonen; räcker den inte till vid avkortning provas nästa, sedan `distribute` |
-| `distribute` | proportionellt mot zonernas längd — behövs när modellen har jämnt fördelade detaljer och symmetrin ska bevaras |
+| `auto` (standard) | symmetrin först, proportionerna sedan — se `docs/RESIZE.md` |
+| `longest` | allt i den längsta zonen; räcker den inte till vid avkortning provas nästa, sedan `distribute` |
+| `distribute` | proportionellt mot zonernas längd — över samtliga zoner, även de korta |
 | `manual` | `span_index` pekar ut zonen |
 
-Positiv delta: snitta mitt i zonen, translatera den bortre halvan `delta` mm,
-extrudera zonens tvärsnittspolygon `delta + 0,05` mm och unionera de tre
-delarna. Negativ delta: två snitt `|delta|` mm isär inom zonen, mittstycket
+`auto` går i tre steg: `detect_mirror_symmetry` avgör om resultatet måste vara
+symmetriskt, `_repeated_spans` plockar ut de jämnstora zonerna som bildar
+modellens upprepade mönster, och `_mirror_buckets` grupperar dem i spegelpar som
+får lika mycket var. Alla insättningar räknas ut av `plan_insertions` i
+**originalets koordinater innan den första körs**, och utförs sedan uppifrån och
+ner — annars förskjuter den första insättningen snittplanen för de zoner som
+står på tur. Samma funktion driver förhandsvisningen i gränssnittet, så det gula
+som ritas är exakt det som kommer att göras.
+
+Positiv delta: snitta i zonen (`_plan_insertion` väljer läget: minst 2 mm till
+zonens ändar, och tvärsnittet måste vara oförändrat ±0,5 mm på båda sidor om
+planet), translatera den bortre halvan `delta` mm, extrudera tvärsnittspolygonen
+**vid snittplanet** `delta + 0,05` mm och unionera de tre delarna. Negativ delta: två snitt `|delta|` mm isär inom zonen, mittstycket
 kastas, bortre halvan translateras och ett tunt mellanstycke läggs över skarven.
 
 **Överlappet på 0,025 mm per sida** är hela poängen med mellanstycket.

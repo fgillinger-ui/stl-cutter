@@ -77,8 +77,9 @@ MAX_EXPLODE_MM = 200
 
 #: Val i rullgardinen för hur måttändringen ska fördelas.
 SPAN_SELECTIONS = (
-    ("longest", "Lägg till i längsta partiet"),
+    ("auto", "Automatiskt (håll modellen symmetrisk)"),
     ("distribute", "Fördela jämnt över alla partier"),
+    ("longest", "Lägg till i längsta partiet"),
 )
 
 #: Bredd på bilden bredvid motiveringen.
@@ -212,6 +213,13 @@ class MainWindow(QMainWindow):
         self.span_selection = QComboBox()
         for value, label in SPAN_SELECTIONS:
             self.span_selection.addItem(label, value)
+        self.span_selection.setToolTip(
+            "Automatiskt är standard: är modellen spegelsymmetrisk längs axeln "
+            "blir den det även efteråt, och tillskottet fördelas över de "
+            "jämnstora partierna så att mellanrummen förblir lika stora.\n"
+            "Längsta partiet lägger allt på ett ställe - ett medvetet val när "
+            "modellen bara har en rak sträcka."
+        )
         layout.addWidget(self.span_selection)
 
         self.scale_anyway = QCheckBox("Skala ändå (godstjocklek och hål förändras)")
@@ -695,17 +703,6 @@ class MainWindow(QMainWindow):
         self.scale_anyway.setVisible(False)
         self.scale_anyway.setChecked(False)
         self._update_size_fields()
-
-        x, y, z = info.extents_mm
-        state = (
-            "Meshen är hel."
-            if info.watertight
-            else f"Varning: {info.open_edges} trasiga kanter — se meddelandet nedan."
-        )
-        self.model_label.setText(
-            f"<b>{info.path.name}</b><br>{x:.1f} × {y:.1f} × {z:.1f} mm<br>"
-            f"Volym {info.volume_mm3 / 1000:.1f} cm³<br>{state}"
-        )
         self.status(info.summary())
         for repair in info.repairs:
             self.status(f"Reparation: {repair}")
@@ -747,8 +744,36 @@ class MainWindow(QMainWindow):
     # 1b. Ändra mått
     # ------------------------------------------------------------------
 
+    def _update_model_label(self) -> None:
+        """Panelen med filnamn, mått och meshens tillstånd.
+
+        Måtten läses ur `mesh_info` varje gång, aldrig ur ett sparat värde från
+        inläsningen: panelen och måttsektionen ska aldrig kunna visa två olika
+        mått för samma modell.
+        """
+        if self.mesh_info is None:
+            self.model_label.setText("Ingen modell öppnad.")
+            return
+        info = self.mesh_info
+        x, y, z = info.extents_mm
+        state = (
+            "Meshen är hel."
+            if info.watertight
+            else f"Varning: {info.open_edges} trasiga kanter — se meddelandet nedan."
+        )
+        self.model_label.setText(
+            f"<b>{info.path.name}</b><br>{x:.1f} × {y:.1f} × {z:.1f} mm<br>"
+            f"Volym {info.volume_mm3 / 1000:.1f} cm³<br>{state}"
+        )
+
     def _update_size_fields(self) -> None:
-        """Skriv modellens mått i etiketten och i inmatningsfälten."""
+        """Skriv modellens mått i etiketten och i inmatningsfälten.
+
+        Panelen uppdateras i samma andetag. Att låta den ligga kvar med måtten
+        från inläsningen var orsaken till att den kunde visa 230 × 240 × 182 mm
+        samtidigt som måttsektionen visade något annat.
+        """
+        self._update_model_label()
         if self.mesh_info is None:
             self.current_size_label.setText("Nuvarande mått: –")
             return
@@ -799,33 +824,72 @@ class MainWindow(QMainWindow):
         return axes or [0, 1, 2]
 
     def show_spans(self) -> None:
-        """Visa de prismatiska partierna i 3D-vyn, i grönt."""
+        """Visa de prismatiska partierna i grönt och insättningspunkterna i gult.
+
+        Med ett mått ifyllt planeras hela måttändringen utan att köras, så att
+        man ser exakt var materialet kommer att hamna innan man trycker på
+        "Ändra mått".
+        """
         if self.mesh_info is None:
             return
         mesh = self.mesh_info.mesh
         axes = self._axes_of_interest()
+        targets = self._requested_targets()
+        selection = self.span_selection.currentData() or "auto"
 
         def work(progress=None):
             found = []
+            planned = []
             for position, axis in enumerate(axes):
                 progress(position / len(axes), f"Söker partier längs {AXIS_NAMES[axis]}")
-                found.extend(resize_core.find_prismatic_spans(mesh, axis, progress=None))
+                spans = resize_core.find_prismatic_spans(mesh, axis, progress=None)
+                found.extend(spans)
+                if targets[axis] is None or not spans:
+                    continue
+                try:
+                    insertions, _, _ = resize_core.plan_insertions(
+                        mesh,
+                        axis,
+                        float(targets[axis]),
+                        span_selection=selection,
+                        spans=spans,
+                    )
+                except ResizeError as error:
+                    # Planeringen misslyckades: partierna är fortfarande värda
+                    # att visa, och felet berättar varför inget gult syns.
+                    log.debug("Kunde inte planera insättningar: %s", error)
+                    continue
+                planned.extend(insertions)
             progress(1.0, "Klart")
-            return found
+            return found, planned
 
         self._start(work, self._on_spans_found, "Söker partier med konstant tvärsnitt…")
 
-    def _on_spans_found(self, spans) -> None:
+    def _on_spans_found(self, outcome) -> None:
+        spans, insertions = outcome
         self.spans = spans
         self.view.show_model(self.mesh_info.mesh)
         if not spans:
             self._no_span_warning()
             return
         self.view.show_spans(spans, self.mesh_info.mesh.bounds)
+        self.view.show_insertions(insertions, self.mesh_info.mesh.bounds)
         self.scale_anyway.setVisible(False)
-        self.status(f"{len(spans)} parti(er) med konstant tvärsnitt:")
+        self.status(f"{len(spans)} parti(er) med konstant tvärsnitt (grönt):")
         for index, span in enumerate(spans, start=1):
             self.status(f"  {index}. {span.describe()}")
+        if insertions:
+            self.status(f"{len(insertions)} planerad(e) insättningspunkt(er) (gult):")
+            for item in insertions:
+                name = AXIS_NAMES[item.axis]
+                self.status(
+                    f"  {item.delta:+.1f} mm vid {name.lower()}={item.cut_at:.1f} mm"
+                )
+        else:
+            self.status(
+                "Fyll i ett önskat mått och tryck igen för att se var materialet "
+                "kommer att läggas."
+            )
 
     def _no_span_warning(self, message: str | None = None) -> None:
         """Ingen zon hittad: visa varningen och kräv ett aktivt val."""
@@ -856,7 +920,7 @@ class MainWindow(QMainWindow):
 
         mesh = self.mesh_info.mesh
         mode = "scale" if self.scale_anyway.isChecked() else "preserve"
-        selection = self.span_selection.currentData() or "longest"
+        selection = self.span_selection.currentData() or "auto"
 
         def work(progress=None):
             try:
@@ -884,10 +948,12 @@ class MainWindow(QMainWindow):
         self.mesh_info = self._reload_info(outcome.mesh)
         self.undo_resize_button.setEnabled(True)
         for entry in outcome.axes:
-            self.status(
-                f"{AXIS_NAMES[entry.axis]}: {entry.from_mm:.1f} → {entry.to_mm:.1f} mm "
-                f"({entry.delta_mm:+.1f} mm)"
-            )
+            self.status(entry.placement)
+            if entry.symmetric_before:
+                self.status(
+                    "  Modellen var spegelsymmetrisk längs "
+                    f"{AXIS_NAMES[entry.axis]} och är det fortfarande."
+                )
         for warning in outcome.warnings:
             self.status(f"Varning: {warning}", error=True)
         self._after_model_changed()
@@ -930,6 +996,9 @@ class MainWindow(QMainWindow):
         self.plan_summary.setText("")
         self.cut_button.setEnabled(False)
         self.preview_button.setEnabled(False)
+        # show_model ramar in den nya bounding boxen, så modellen står kvar
+        # mitt i vyn. En måttändring flyttar modellens mitt, och utan
+        # omcentrering ser förskjutningen ut som en asymmetri den inte är.
         self.view.show_model(self.mesh_info.mesh)
         self.on_bed_toggled()
         self._update_size_fields()

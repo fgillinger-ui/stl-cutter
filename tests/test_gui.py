@@ -1596,6 +1596,47 @@ def test_showing_the_spans_marks_them_in_the_view(qapp, window, model_file):
     assert "parti" in window.status_box.toPlainText()
 
 
+def test_showing_the_spans_also_shows_the_planned_insertions(qapp, window, model_file):
+    """Det gula ska synas innan man trycker på Ändra mått, inte efteråt."""
+    load(qapp, window, model_file)
+    window.target_x.setValue(900.0)
+    window.show_spans()
+    wait_for_worker(qapp, window)
+    text = window.status_box.toPlainText()
+    assert "insättningspunkt" in text
+    assert "x=" in text
+
+
+def test_the_two_size_displays_always_agree(qapp, window, model_file):
+    """Panelen och måttsektionen får aldrig visa olika mått för samma modell.
+
+    Regressionstest: panelen skrevs bara vid inläsningen och låg kvar med de
+    gamla måtten efter en måttändring.
+    """
+    load(qapp, window, model_file)
+
+    def shown() -> tuple[str, str]:
+        x, y, z = window.mesh_info.extents_mm
+        return f"{x:.1f} × {y:.1f} × {z:.1f} mm", window.current_size_label.text()
+
+    def check() -> None:
+        expected, current = shown()
+        assert expected in window.model_label.text(), window.model_label.text()
+        assert expected in current, current
+
+    check()
+
+    window.target_x.setValue(900.0)
+    window.start_resize()
+    wait_for_worker(qapp, window)
+    assert "900" in window.model_label.text()
+    check()
+
+    window.undo_resize()
+    assert "600" in window.model_label.text()
+    check()
+
+
 def test_resizing_replaces_the_model_and_undo_restores_it(qapp, window, model_file):
     load(qapp, window, model_file)
     before = window.mesh_info.mesh
@@ -1613,6 +1654,18 @@ def test_resizing_replaces_the_model_and_undo_restores_it(qapp, window, model_fi
     assert window.mesh_info.mesh is before
     assert float(window.mesh_info.extents_mm[0]) == pytest.approx(600.0, abs=0.1)
     assert not window.undo_resize_button.isEnabled()
+
+
+def test_the_view_is_recentred_after_a_resize(qapp, window, model_file):
+    """Modellen ska stå kvar mitt i vyn - annars ser förskjutningen fel ut."""
+    load(qapp, window, model_file)
+    window.target_x.setValue(900.0)
+    window.start_resize()
+    wait_for_worker(qapp, window)
+
+    centre = np.asarray(window.mesh_info.mesh.bounds).mean(axis=0)
+    camera = window.view.opts["center"]
+    assert [camera.x(), camera.y(), camera.z()] == pytest.approx(centre, abs=0.5)
 
 
 def test_resizing_clears_an_earlier_analysis(qapp, window, model_file):
@@ -1660,9 +1713,14 @@ def test_a_sphere_offers_the_scale_checkbox_unticked(qapp, window, sphere_file):
     assert "ovala" in window.status_box.toPlainText()
 
 
-def test_the_span_dropdown_offers_both_strategies(window):
+def test_the_span_dropdown_offers_all_strategies(window):
     values = [window.span_selection.itemData(i) for i in range(window.span_selection.count())]
-    assert values == ["longest", "distribute"]
+    assert values == ["auto", "distribute", "longest"]
+
+
+def test_auto_is_the_default_strategy(window):
+    """`longest` finns kvar som ett medvetet val, men är inte standard."""
+    assert window.span_selection.currentData() == "auto"
 
 
 def test_span_box_covers_the_model_across_the_axis():
@@ -1678,3 +1736,18 @@ def test_span_box_covers_the_model_across_the_axis():
     assert high[1] == pytest.approx(60.0)
     assert low[0] < -50.0 and high[0] > 50.0  # sticker utanför så att den syns
     assert low[2] < -20.0 and high[2] > 20.0
+
+
+def test_insertion_quad_lies_in_the_cut_plane():
+    from types import SimpleNamespace
+
+    from stl_cutter.gui.view3d import insertion_quad
+
+    bounds = np.array([[-50.0, -100.0, -20.0], [50.0, 100.0, 20.0]])
+    insertion = SimpleNamespace(axis=1, cut_at=37.5, delta=5.0)
+    vertices, faces = insertion_quad(insertion, bounds)
+
+    assert vertices[:, 1] == pytest.approx(37.5)  # planet ligger vid snittet
+    assert len(faces) == 2
+    assert vertices[:, 0].min() < -50.0 and vertices[:, 0].max() > 50.0
+    assert vertices[:, 2].min() < -20.0 and vertices[:, 2].max() > 20.0
