@@ -109,6 +109,54 @@ def shelf_unit() -> trimesh.Trimesh:
     return trimesh.boolean.union([shell, *shelves], engine="manifold")
 
 
+
+@pytest.fixture
+def ladder() -> trimesh.Trimesh:
+    """Stege 240 mm längs Y: två sidostycken och sex jämnt fördelade pinnar.
+
+    Pinnarna är runda, så tvärsnittet ändrar sig genom hela pinnen - de blir
+    aldrig prismatiska partier och kan därför inte växa. Det som *kan* växa är
+    de fem lika stora mellanrummen och de två kortare ändstyckena.
+    """
+    parts = []
+    for x in (-50.0, 50.0):
+        rail = trimesh.creation.box(extents=[10.0, 240.0, 20.0])
+        rail.apply_translation([x, 0.0, 0.0])
+        parts.append(rail)
+    for index in range(6):
+        y = -120.0 + 20.0 + index * 40.0
+        rung = trimesh.creation.cylinder(radius=5.0, height=100.0, sections=48)
+        rung.apply_transform(
+            trimesh.transformations.rotation_matrix(np.pi / 2.0, [0.0, 1.0, 0.0])
+        )
+        rung.apply_translation([0.0, y, 0.0])
+        parts.append(rung)
+    return trimesh.boolean.union(parts, engine="manifold")
+
+
+@pytest.fixture
+def lopsided_ladder() -> trimesh.Trimesh:
+    """Samma stege, men med pinnarna medvetet osymmetriskt placerade.
+
+    Mellanrummen är olika långa och modellen är inte spegelsymmetrisk längs Y.
+    Den ska inte tvingas till symmetri - men fördelningen ska ändå vara
+    proportionell mot mellanrummens längd.
+    """
+    parts = []
+    for x in (-50.0, 50.0):
+        rail = trimesh.creation.box(extents=[10.0, 240.0, 20.0])
+        rail.apply_translation([x, 0.0, 0.0])
+        parts.append(rail)
+    for y in (-95.0, -35.0, 20.0, 70.0):
+        rung = trimesh.creation.cylinder(radius=5.0, height=100.0, sections=48)
+        rung.apply_transform(
+            trimesh.transformations.rotation_matrix(np.pi / 2.0, [0.0, 1.0, 0.0])
+        )
+        rung.apply_translation([0.0, y, 0.0])
+        parts.append(rung)
+    return trimesh.boolean.union(parts, engine="manifold")
+
+
 # --------------------------------------------------------------------------
 # Gemensamma kontroller
 # --------------------------------------------------------------------------
@@ -132,6 +180,63 @@ def check_result(result: R.ResizeResult, axis: int, target_mm: float) -> None:
             abs(entry.actual_volume_change_mm3 - entry.expected_volume_change_mm3)
             <= tolerance
         )
+
+
+def _is_thick(mesh: trimesh.Trimesh, axis: int, position: float, thin_area: float) -> bool:
+    polygon = R.section_polygon(mesh, axis, float(position))
+    return polygon is not None and polygon.area > thin_area
+
+
+def _edge(mesh, axis, low, high, thin_area, want_thick_at_high: bool) -> float:
+    """Halvera fram övergången mellan tunt och tjockt till 0,005 mm."""
+    for _ in range(12):
+        middle = (low + high) / 2.0
+        if _is_thick(mesh, axis, middle, thin_area) == want_thick_at_high:
+            high = middle
+        else:
+            low = middle
+    return (low + high) / 2.0
+
+
+def rung_positions(
+    mesh: trimesh.Trimesh, axis: int = 1, thin_area: float = 450.0, step: float = 0.5
+) -> list[tuple[float, float]]:
+    """(mitt, tjocklek) för varje pinne, mätt på tvärsnittsarean.
+
+    Bara sidostyckena ger 400 mm²; där en pinne finns är arean större. Måtten
+    läses alltså ur geometrin, inte ur det programmet påstår sig ha gjort.
+    Grovsökning var halv millimeter, sedan halvering fram till kanten - annars
+    tar mätningen längre tid än måttändringen själv.
+    """
+    low, high = float(mesh.bounds[0][axis]), float(mesh.bounds[1][axis])
+    positions = np.arange(low + step / 2.0, high, step)
+    thick = [_is_thick(mesh, axis, float(p), thin_area) for p in positions]
+
+    found: list[tuple[float, float]] = []
+    start_index = None
+    for index, is_thick in enumerate(thick):
+        if is_thick and start_index is None:
+            start_index = index
+        elif start_index is not None and not is_thick:
+            begins = _edge(
+                mesh, axis, positions[start_index - 1], positions[start_index],
+                thin_area, True,
+            )
+            ends = _edge(
+                mesh, axis, positions[index - 1], positions[index], thin_area, False
+            )
+            found.append(((begins + ends) / 2.0, ends - begins))
+            start_index = None
+    return found
+
+
+def gaps_between(rungs: list[tuple[float, float]]) -> list[float]:
+    """Mellanrummen mellan pinnarna, kant till kant."""
+    return [
+        (rungs[index + 1][0] - rungs[index + 1][1] / 2.0)
+        - (rungs[index][0] + rungs[index][1] / 2.0)
+        for index in range(len(rungs) - 1)
+    ]
 
 
 def section_at(mesh: trimesh.Trimesh, axis: int, position: float):
@@ -445,9 +550,14 @@ def test_report_contains_everything_the_user_needs(tmp_path, hollow_box):
 
     axis = payload["axes"][0]
     assert axis["axis"] == "Y"
-    assert axis["span_selection"] == "longest"
+    assert axis["span_selection"] == "auto"
+    assert axis["resolved_selection"] == "symmetric-centered"
+    assert axis["mirror_symmetric_before"] is True
+    assert axis["mirror_symmetric_after"] is True
     assert axis["spans_found"]
     assert axis["spans_used"][0]["applied_delta_mm"] == pytest.approx(150.0, abs=0.5)
+    assert axis["spans_used"][0]["cut_at_mm"] == pytest.approx(0.0, abs=0.1)
+    assert axis["placement"].startswith("Y: 250,0 → 400,0 mm.")
     assert axis["actual_volume_change_mm3"] != 0.0
     assert "warnings" in axis
 
@@ -532,3 +642,230 @@ def test_cli_cut_resizes_before_planning(tmp_path, hollow_box):
         abs(bounds[1][index] - bounds[0][index]) for index in range(3)
     )
     assert depth == pytest.approx(550.0, abs=1.0)
+
+
+# --------------------------------------------------------------------------
+# Spegelsymmetri
+# --------------------------------------------------------------------------
+
+
+def test_a_box_is_mirror_symmetric_along_every_axis():
+    box = trimesh.creation.box(extents=[100.0, 240.0, 60.0])
+    for axis in (0, 1, 2):
+        assert R.detect_mirror_symmetry(box, axis)
+
+
+def test_the_ladder_is_mirror_symmetric_along_its_length(ladder):
+    assert R.detect_mirror_symmetry(ladder, 1)
+
+
+def test_a_lopsided_model_is_not_called_symmetric(lopsided_ladder):
+    assert not R.detect_mirror_symmetry(lopsided_ladder, 1)
+
+
+def test_a_drilled_box_with_one_hole_is_not_symmetric():
+    body = trimesh.creation.box(extents=[100.0, 240.0, 40.0])
+    hole = trimesh.creation.cylinder(radius=6.0, height=60.0, sections=48)
+    hole.apply_translation([0.0, 90.0, 0.0])
+    mesh = trimesh.boolean.difference([body, hole], engine="manifold")
+    assert not R.detect_mirror_symmetry(mesh, 1)
+    assert R.detect_mirror_symmetry(mesh, 0)
+
+
+def test_a_slight_asymmetry_is_caught():
+    """En halv millimeter räcker - gränsen ligger under vad en skrivare ser."""
+    left = trimesh.creation.box(extents=[100.0, 100.0, 40.0])
+    left.apply_translation([0.0, -50.0, 0.0])
+    right = trimesh.creation.box(extents=[100.0, 100.0, 40.0])
+    right.apply_translation([0.0, 50.0, 0.0])
+    bump = trimesh.creation.box(extents=[20.0, 20.0, 41.0])
+    bump.apply_translation([0.0, 40.0, 0.0])
+    mesh = trimesh.boolean.union([left, right, bump], engine="manifold")
+    assert not R.detect_mirror_symmetry(mesh, 1)
+
+
+# --------------------------------------------------------------------------
+# auto: var materialet hamnar
+# --------------------------------------------------------------------------
+
+
+def test_auto_is_the_default_selection(hollow_box):
+    result = R.resize_axis(hollow_box, 1, 300.0)
+    assert result.axes[0].span_selection == "auto"
+
+
+def test_a_symmetric_box_grows_centred_on_the_mid_plane(hollow_box):
+    """Mittplanet ligger i ett prismatiskt parti: hela tillskottet hamnar där."""
+    mid = R.mirror_plane(hollow_box, 1)
+    result = R.resize_axis(hollow_box, 1, 400.0)
+    check_result(result, 1, 400.0)
+
+    entry = result.axes[0]
+    assert entry.resolved_selection == "symmetric-centered"
+    assert len(entry.insertions) == 1
+    assert entry.insertions[0].cut_at == pytest.approx(mid, abs=0.1)
+    assert entry.insertions[0].delta == pytest.approx(150.0, abs=0.1)
+    assert entry.symmetric_before and entry.symmetric_after
+
+
+def test_the_ladder_keeps_every_gap_equal_when_lengthened(ladder):
+    """240 → 250 mm: tillskottet delas lika på de fem mellanrummen."""
+    before = rung_positions(ladder)
+    assert len(before) == 6
+
+    result = R.resize_axis(ladder, 1, 250.0)
+    check_result(result, 1, 250.0)
+
+    after = rung_positions(result.mesh)
+    assert len(after) == 6
+
+    gaps = gaps_between(after)
+    assert max(gaps) - min(gaps) <= 0.1, gaps
+
+    for was, now in zip(before, after):
+        assert now[1] == pytest.approx(was[1], abs=0.1), "pinnen ska inte bli tjockare"
+
+    assert R.detect_mirror_symmetry(result.mesh, 1)
+    assert result.axes[0].symmetric_after
+
+
+def test_the_ladder_keeps_every_gap_equal_when_shortened(ladder):
+    """240 → 210 mm: samma sak baklänges."""
+    before = rung_positions(ladder)
+    result = R.resize_axis(ladder, 1, 210.0)
+    check_result(result, 1, 210.0)
+
+    after = rung_positions(result.mesh)
+    assert len(after) == 6
+
+    gaps = gaps_between(after)
+    assert max(gaps) - min(gaps) <= 0.1, gaps
+
+    for was, now in zip(before, after):
+        assert now[1] == pytest.approx(was[1], abs=0.1)
+
+    assert R.detect_mirror_symmetry(result.mesh, 1)
+
+
+def test_the_ladder_puts_the_material_where_the_log_says(ladder):
+    result = R.resize_axis(ladder, 1, 250.0)
+    entry = result.axes[0]
+    assert len(entry.insertions) == 5
+    assert all(item.delta == pytest.approx(2.0, abs=0.01) for item in entry.insertions)
+    # Insättningarna utförs uppifrån och ner, så att de partier som ännu inte
+    # behandlats behåller sina originalkoordinater.
+    positions = [item.cut_at for item in entry.insertions]
+    assert positions == sorted(positions, reverse=True)
+    # ... och de ligger symmetriskt kring mittplanet.
+    mirrored = sorted(-value for value in positions)
+    assert mirrored == pytest.approx(sorted(positions), abs=0.1)
+
+
+def test_a_lopsided_model_is_not_forced_into_symmetry(lopsided_ladder):
+    """Fördelningen ska vara proportionell, men symmetri ska inte uppfinnas."""
+    result = R.resize_axis(lopsided_ladder, 1, 260.0)
+    check_result(result, 1, 260.0)
+
+    entry = result.axes[0]
+    assert entry.symmetric_before is False
+    assert entry.symmetric_after is False
+    assert entry.resolved_selection == "distribute"
+    assert len(entry.insertions) > 1
+
+    # Proportionellt: andel av delta = andel av partiernas sammanlagda längd.
+    total = sum(item.span.length for item in entry.insertions)
+    for item in entry.insertions:
+        assert item.delta == pytest.approx(20.0 * item.span.length / total, abs=0.05)
+
+    # Modellen var osymmetrisk och ska förbli det - ingen symmetri uppfanns.
+    assert not R.detect_mirror_symmetry(result.mesh, 1)
+
+
+def test_longest_is_still_available_as_a_deliberate_choice(ladder):
+    """`longest` finns kvar i menyn - men bara som ett medvetet val."""
+    result = R.resize_axis(ladder, 1, 250.0, span_selection="longest", validate=False)
+    entry = result.axes[0]
+    assert entry.resolved_selection == "longest"
+    assert len(entry.insertions) == 1
+    assert entry.insertions[0].delta == pytest.approx(10.0, abs=0.01)
+
+
+def test_symmetry_is_checked_even_for_longest(ladder):
+    """Ett osymmetriskt resultat på en symmetrisk modell levereras inte."""
+    with pytest.raises(ValidationError) as error:
+        R.resize_axis(ladder, 1, 250.0, span_selection="longest")
+    assert error.value.code == "symmetry_lost"
+    assert "spegelsymmetrisk" in error.value.message
+
+
+def test_a_side_effect_on_another_axis_is_refused(monkeypatch, hollow_box):
+    """Ett mellanstycke som skjuter ut i sidled ska fällas, inte levereras."""
+    original = R._filler
+
+    def fat_filler(polygon, axis, low, high):
+        solid = original(polygon, axis, low, high)
+        return solid.union(trimesh.creation.box(extents=[400.0, high - low, 10.0]))
+
+    monkeypatch.setattr(R, "_filler", fat_filler)
+    with pytest.raises(ValidationError) as error:
+        R.resize_axis(hollow_box, 1, 300.0)
+    assert error.value.code in {"side_effect", "volume_mismatch"}
+
+
+# --------------------------------------------------------------------------
+# Snittplanet
+# --------------------------------------------------------------------------
+
+
+def test_the_cut_plane_keeps_its_distance_to_the_ends_of_the_span():
+    span = R.PrismaticSpan(axis=1, start=0.0, end=10.0, section_area=100.0)
+    for candidate in R._cut_candidates(span, delta=5.0, preferred=9.9):
+        assert R.SPAN_END_MARGIN_MM - 1e-9 <= candidate <= 10.0 - R.SPAN_END_MARGIN_MM
+
+
+def test_the_cut_plane_leaves_room_for_the_removed_piece():
+    span = R.PrismaticSpan(axis=1, start=0.0, end=20.0, section_area=100.0)
+    for candidate in R._cut_candidates(span, delta=-10.0, preferred=0.0):
+        assert candidate - 5.0 >= R.SPAN_END_MARGIN_MM - 1e-9
+        assert candidate + 5.0 <= 20.0 - R.SPAN_END_MARGIN_MM + 1e-9
+
+
+def test_the_section_is_taken_at_the_cut_plane_not_at_the_span_start(drilled_box):
+    """Mellanstycket extruderas från tvärsnittet vid snittet, inget annat."""
+    insertions, _, _ = R.plan_insertions(drilled_box, 1, 350.0)
+    for item in insertions:
+        at_cut = R.section_polygon(drilled_box, 1, item.cut_at)
+        assert item.polygon.symmetric_difference(at_cut).area < 1e-6
+
+
+def test_an_unstable_cut_plane_is_moved(pipe):
+    """Ett läge där tvärsnittet ändrar sig ±0,5 mm ska inte väljas."""
+    spans = R.find_prismatic_spans(pipe, 2)
+    insertions, _, _ = R.plan_insertions(pipe, 2, 260.0, spans=spans)
+    for item in insertions:
+        assert R._section_is_stable(pipe, 2, item.cut_at, tol=R.DEFAULT_TOL)
+
+
+# --------------------------------------------------------------------------
+# Loggtexten
+# --------------------------------------------------------------------------
+
+
+def test_the_log_says_exactly_where_the_material_went(ladder):
+    result = R.resize_axis(ladder, 1, 250.0)
+    text = result.axes[0].placement
+    assert text.startswith("Y: 240,0 → 250,0 mm.")
+    assert "10,0 mm fördelat på 5 partier" in text
+    assert text.count("+2,0 mm vid y=") == 5
+    assert " och " in text
+    assert text.endswith(".")
+
+
+def test_the_log_names_a_single_insertion_point(hollow_box):
+    text = R.resize_axis(hollow_box, 1, 400.0).axes[0].placement
+    assert text == "Y: 250,0 → 400,0 mm. 150,0 mm tillagt vid y=0,0."
+
+
+def test_the_log_says_when_material_was_removed(hollow_box):
+    text = R.resize_axis(hollow_box, 1, 180.0).axes[0].placement
+    assert text.startswith("Y: 250,0 → 180,0 mm. 70,0 mm borttaget vid y=")

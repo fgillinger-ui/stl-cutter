@@ -30,6 +30,11 @@ PLANE_COLOR = (0.95, 0.55, 0.15, 0.28)
 SPAN_COLOR = (0.25, 0.80, 0.35, 0.22)
 SPAN_EDGE_COLOR = (0.15, 0.65, 0.25, 0.9)
 
+#: Planerade insättningspunkter - där materialet faktiskt kommer att hamna.
+#: Gult mot det gröna: partiet är var det *går*, planet är var det *blir*.
+INSERTION_COLOR = (0.95, 0.85, 0.20, 0.40)
+INSERTION_EDGE_COLOR = (0.90, 0.75, 0.10, 0.95)
+
 #: Hur långt utanför modellen zonmarkeringen ritas, som andel av storleken.
 SPAN_MARGIN = 0.02
 BED_COLOR_ON_DARK = (0.45, 0.5, 0.55, 0.6)
@@ -130,6 +135,31 @@ def span_box(span, bounds, margin: float = SPAN_MARGIN):
     low[axis] = float(span.start)
     high[axis] = float(span.end)
     return low, high
+
+
+def insertion_quad(insertion, bounds, margin: float = PLANE_MARGIN):
+    """Kvadraten som markerar ett planerat snittplan.
+
+    Planet ligger vinkelrätt mot insättningens axel vid `cut_at` och täcker
+    hela modellens tvärsnitt, en aning utanför så att det syns mot modellen.
+    """
+    bounds = np.asarray(bounds, dtype=float)
+    size = bounds[1] - bounds[0]
+    low = bounds[0] - size * margin
+    high = bounds[1] + size * margin
+    axis = int(insertion.axis)
+    low[axis] = high[axis] = float(insertion.cut_at)
+
+    others = [index for index in range(3) if index != axis]
+    corners = []
+    for first, second in ((0, 0), (1, 0), (1, 1), (0, 1)):
+        point = np.array(low, dtype=float)
+        point[others[0]] = low[others[0]] if first == 0 else high[others[0]]
+        point[others[1]] = low[others[1]] if second == 0 else high[others[1]]
+        corners.append(point)
+    vertices = np.array(corners, dtype=float)
+    faces = np.array([[0, 1, 2], [0, 2, 3]], dtype=int)
+    return vertices, faces
 
 
 def box_mesh(low, high):
@@ -294,6 +324,26 @@ class ModelView(gl.GLViewWidget):
                 glOptions="additive",
                 drawEdges=True,
                 edgeColor=SPAN_EDGE_COLOR,
+            )
+            self.addItem(item)
+            self._span_items.append(item)
+
+    def show_insertions(self, insertions, bounds) -> None:
+        """Rita de planerade insättningspunkterna som gula plan.
+
+        Poängen är att man ska se vad som kommer att hända innan det görs: det
+        gröna säger var modellen *går* att sträcka, det gula var materialet
+        faktiskt hamnar.
+        """
+        for insertion in insertions:
+            vertices, faces = insertion_quad(insertion, bounds)
+            item = gl.GLMeshItem(
+                meshdata=gl.MeshData(vertexes=vertices, faces=faces),
+                smooth=False,
+                color=INSERTION_COLOR,
+                glOptions="additive",
+                drawEdges=True,
+                edgeColor=INSERTION_EDGE_COLOR,
             )
             self.addItem(item)
             self._span_items.append(item)

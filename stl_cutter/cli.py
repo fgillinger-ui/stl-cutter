@@ -45,9 +45,22 @@ def _add_resize_options(parser: argparse.ArgumentParser) -> None:
         help="preserve ändrar bara prismatiska partier; scale skalar rakt av och deformerar.",
     )
     parser.add_argument(
+        "--select",
+        choices=["auto", "longest", "distribute"],
+        default="auto",
+        help="Var materialet läggs. auto (standard) håller modellen symmetrisk och "
+        "fördelar över de jämnstora partierna; longest lägger allt i det längsta; "
+        "distribute fördelar proportionellt över alla.",
+    )
+    parser.add_argument(
         "--distribute",
         action="store_true",
-        help="Fördela ändringen proportionellt över alla partier i stället för det längsta.",
+        help="Samma sak som --select distribute.",
+    )
+    parser.add_argument(
+        "--longest",
+        action="store_true",
+        help="Samma sak som --select longest.",
     )
     parser.add_argument(
         "--span",
@@ -204,7 +217,11 @@ def _span_selection(args: argparse.Namespace) -> tuple[str, int | None]:
         if args.span < 1:
             raise ValueError("--span numreras från 1 och uppåt.")
         return "manual", args.span - 1
-    return ("distribute" if args.distribute else "longest"), None
+    if getattr(args, "distribute", False):
+        return "distribute", None
+    if getattr(args, "longest", False):
+        return "longest", None
+    return getattr(args, "select", "auto"), None
 
 
 def _print_resize(result) -> None:
@@ -212,10 +229,14 @@ def _print_resize(result) -> None:
         name = resize_core.AXIS_NAMES[entry.axis]
         print(
             f"  {name}: {entry.from_mm:.1f} -> {entry.to_mm:.1f} mm "
-            f"({entry.delta_mm:+.1f} mm, {entry.mode})"
+            f"({entry.delta_mm:+.1f} mm, {entry.mode}, {entry.resolved_selection})"
         )
-        for span, delta in entry.chosen:
-            print(f"      {delta:+7.2f} mm i {span.describe()}")
+        print(f"      {entry.placement}")
+        for item in entry.insertions:
+            print(
+                f"      {item.delta:+7.2f} mm vid {name.lower()}={item.cut_at:.1f} mm "
+                f"i {item.span.describe()}"
+            )
         if entry.mode == "preserve" and entry.chosen:
             print(
                 f"      volym {entry.actual_volume_change_mm3 / 1000.0:+.2f} cm3 "
