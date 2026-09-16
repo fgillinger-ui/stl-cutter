@@ -1846,7 +1846,13 @@ def test_the_guides_still_line_up_afterwards(qapp, window, tmp_path):
 
 
 def test_unlinking_leaves_the_other_object_alone(qapp, window, tmp_path):
-    """Kryssar man ur kopplingen ska bara den valda delen ändras."""
+    """Kryssar man ur kopplingen ska bara den valda delen ändras.
+
+    Båda halvorna måste kontrolleras. Att bara se att bakplattan står kvar
+    räcker inte - det gör den även när måttändringen inte gjorde någonting
+    alls, vilket var precis felet: måttet i fälten gäller det valda objektet,
+    men skickades till en måttändring av hela filens låda.
+    """
     window.load_model(_two_object_file(tmp_path))
     wait_for_worker(qapp, window)
     window.part_combo.setCurrentIndex(_leader_index(window, 230))
@@ -1858,7 +1864,34 @@ def test_unlinking_leaves_the_other_object_alone(qapp, window, tmp_path):
     wait_for_worker(qapp, window)
 
     widths = sorted(round(float(part.extents_mm[0])) for part in window.parts)
-    assert 250 in widths, "bakplattan ändrades trots att kopplingen var urkryssad"
+    assert widths == [250, 270], (
+        "det valda objektet skulle bli 270 och bakplattan stå kvar på 250"
+    )
+
+
+def test_a_depth_change_does_not_touch_the_plate(qapp, window, tmp_path):
+    """Bakplattans djup ÄR dess godstjocklek och får aldrig följa med.
+
+    Plattan har inget parti med konstant tvärsnitt längs djupet, så ett försök
+    skulle dessutom falla. Med kopplingen urkryssad ska hyllan bli djupare och
+    plattan förbli lika tjock.
+    """
+    window.load_model(_two_object_file(tmp_path))
+    wait_for_worker(qapp, window)
+    plate = _leader_index(window, 250)
+    thickness_before = round(float(window.parts[plate].extents_mm[1]))
+
+    window.part_combo.setCurrentIndex(_leader_index(window, 230))
+    qapp.processEvents()
+    window.link_parts.setChecked(False)
+    window.target_y.setValue(float(window.target_y.value()) + 40.0)
+    window.start_resize()
+    wait_for_worker(qapp, window)
+
+    plate = _leader_index(window, 250)
+    assert round(float(window.parts[plate].extents_mm[1])) == thickness_before
+    shelf = _leader_index(window, 230)
+    assert float(window.parts[shelf].extents_mm[1]) == pytest.approx(160.0, abs=1.0)
 
 
 def test_the_model_is_still_whole_after_a_linked_resize(qapp, window, tmp_path):
