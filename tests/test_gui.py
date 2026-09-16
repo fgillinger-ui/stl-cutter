@@ -1751,3 +1751,141 @@ def test_insertion_quad_lies_in_the_cut_plane():
     assert len(faces) == 2
     assert vertices[:, 0].min() < -50.0 and vertices[:, 0].max() > 50.0
     assert vertices[:, 2].min() < -20.0 and vertices[:, 2].max() > 20.0
+
+
+# --------------------------------------------------------------------------
+# Flera objekt i samma fil
+# --------------------------------------------------------------------------
+
+
+def _two_object_file(tmp_path: Path) -> Path:
+    """En fil med en hylla (230 mm) och en bakplatta med spår (250 mm)."""
+    from test_assembly import two_objects
+
+    path = tmp_path / "tva_objekt.stl"
+    two_objects().export(path)
+    return path
+
+
+def _leader_index(window, width: int) -> int:
+    return next(
+        i for i, part in enumerate(window.parts) if round(float(part.extents_mm[0])) == width
+    )
+
+
+def test_a_file_with_two_objects_lists_them(qapp, window, tmp_path):
+    """Objektraden ska dyka upp, med ett val per objekt."""
+    window.load_model(_two_object_file(tmp_path))
+    wait_for_worker(qapp, window)
+
+    assert len(window.parts) == 2
+    assert window.part_combo.count() == 2
+    assert window.parts_row.isVisibleTo(window)
+    assert window.link_parts.isVisibleTo(window)
+
+
+def test_a_file_with_one_object_hides_the_row(qapp, window, tmp_path):
+    """Ett enda objekt ska inte belamra gränssnittet med ett val."""
+    import trimesh
+
+    path = tmp_path / "ett.stl"
+    trimesh.creation.box(extents=(40.0, 30.0, 20.0)).export(path)
+
+    window.load_model(path)
+    wait_for_worker(qapp, window)
+
+    assert len(window.parts) == 1
+    assert not window.parts_row.isVisibleTo(window)
+
+
+def test_the_measurement_shown_is_the_selected_object(qapp, window, tmp_path):
+    """Fälten ska visa det valda objektets mått, inte hela filens låda."""
+    window.load_model(_two_object_file(tmp_path))
+    wait_for_worker(qapp, window)
+
+    window.part_combo.setCurrentIndex(_leader_index(window, 230))
+    qapp.processEvents()
+
+    assert window.target_x.value() == pytest.approx(230.0, abs=0.1)
+    assert "230" in window.current_size_label.text()
+
+
+def test_the_other_object_follows_symmetrically(qapp, window, tmp_path):
+    """Hela poängen: hyllan till 270 ska ge plattan 290, inte 270."""
+    window.load_model(_two_object_file(tmp_path))
+    wait_for_worker(qapp, window)
+    window.part_combo.setCurrentIndex(_leader_index(window, 230))
+    qapp.processEvents()
+
+    window.target_x.setValue(270.0)
+    window.start_resize()
+    wait_for_worker(qapp, window)
+
+    widths = sorted(round(float(part.extents_mm[0])) for part in window.parts)
+    assert widths == [270, 290]
+
+
+def test_the_guides_still_line_up_afterwards(qapp, window, tmp_path):
+    """Spåren i plattan ska ha flyttat isär lika mycket som hyllan växte."""
+    from stl_cutter.core import assembly as assembly_core
+
+    window.load_model(_two_object_file(tmp_path))
+    wait_for_worker(qapp, window)
+    plate = _leader_index(window, 250)
+    before = assembly_core.feature_spacing(window.parts[plate].mesh, 0)
+
+    window.part_combo.setCurrentIndex(_leader_index(window, 230))
+    qapp.processEvents()
+    window.target_x.setValue(270.0)
+    window.start_resize()
+    wait_for_worker(qapp, window)
+
+    plate = _leader_index(window, 290)
+    after = assembly_core.feature_spacing(window.parts[plate].mesh, 0)
+    assert after - before == pytest.approx(40.0, abs=0.5)
+
+
+def test_unlinking_leaves_the_other_object_alone(qapp, window, tmp_path):
+    """Kryssar man ur kopplingen ska bara den valda delen ändras."""
+    window.load_model(_two_object_file(tmp_path))
+    wait_for_worker(qapp, window)
+    window.part_combo.setCurrentIndex(_leader_index(window, 230))
+    qapp.processEvents()
+    window.link_parts.setChecked(False)
+
+    window.target_x.setValue(270.0)
+    window.start_resize()
+    wait_for_worker(qapp, window)
+
+    widths = sorted(round(float(part.extents_mm[0])) for part in window.parts)
+    assert 250 in widths, "bakplattan ändrades trots att kopplingen var urkryssad"
+
+
+def test_the_model_is_still_whole_after_a_linked_resize(qapp, window, tmp_path):
+    """Objekten sätts ihop till en mesh igen - den får inte bli trasig."""
+    window.load_model(_two_object_file(tmp_path))
+    wait_for_worker(qapp, window)
+    window.part_combo.setCurrentIndex(_leader_index(window, 230))
+    qapp.processEvents()
+
+    window.target_x.setValue(270.0)
+    window.start_resize()
+    wait_for_worker(qapp, window)
+
+    assert window.mesh_info.watertight
+    assert mesh_io.bad_edges(window.mesh_info.mesh) == (0, 0)
+
+
+def test_a_linked_resize_can_be_undone(qapp, window, tmp_path):
+    window.load_model(_two_object_file(tmp_path))
+    wait_for_worker(qapp, window)
+    window.part_combo.setCurrentIndex(_leader_index(window, 230))
+    qapp.processEvents()
+    window.target_x.setValue(270.0)
+    window.start_resize()
+    wait_for_worker(qapp, window)
+
+    window.undo_resize()
+
+    widths = sorted(round(float(part.extents_mm[0])) for part in window.parts)
+    assert widths == [230, 250]

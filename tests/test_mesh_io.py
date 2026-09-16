@@ -236,10 +236,15 @@ def test_a_scene_with_several_bodies_becomes_one_solid():
 
 
 def test_repair_rebuilds_a_flattened_multi_body_mesh(tmp_path):
-    """En STL har tappat kroppsindelningen - reparationen får hitta tillbaka."""
+    """En STL har tappat kroppsindelningen - reparationen får hitta tillbaka.
+
+    Filen skrivs med trimesh rakt av, inte med `save_stl`. Poängen är en fil
+    som kommer från ett *annat* program och är trasig; vår egen export städar
+    numera efter sig och skulle därför aldrig producera en sådan fil.
+    """
     naive = trimesh.util.concatenate(_two_touching_boxes())
     path = tmp_path / "flerkropp.stl"
-    mesh_io.save_stl(naive, path)
+    naive.export(path)
 
     info = mesh_io.load_mesh(path)
 
@@ -274,3 +279,124 @@ def test_bodies_that_are_far_apart_are_left_alone():
     merged = mesh_io.merge_bodies([first, second])
 
     assert merged.volume == pytest.approx(2 * 1000)
+
+
+# --------------------------------------------------------------------------
+# Export: STL:s 32-bitars precision
+# --------------------------------------------------------------------------
+
+
+def _mesh_with_a_hairline_pair(offset_mm: float = 1e-5):
+    """En hel mesh med två hörn närmare varandra än STL kan skilja på.
+
+    Ett verkligt fall: en måttändrad platta 290 mm bred var hel i minnet men
+    fick två non-manifold-kanter av själva STL-exporten, eftersom float32 vid
+    de koordinaterna inte kan skilja på hörn som ligger hundradels mikrometer
+    isär. Slicern rapporterade det som non-manifold edges.
+    """
+    import numpy as np
+    import trimesh
+
+    mesh = trimesh.creation.box(extents=(280.0, 10.0, 180.0))
+    mesh = mesh.subdivide()
+    vertices = np.asarray(mesh.vertices, dtype=float).copy()
+    far = int(np.argmax(vertices[:, 0]))
+    vertices[far, 0] += offset_mm
+    return trimesh.Trimesh(vertices=vertices, faces=mesh.faces, process=False)
+
+
+def test_an_stl_stays_whole_through_the_export(tmp_path):
+    """Exporten får inte själv skapa non-manifold-kanter."""
+    import trimesh
+
+    mesh = _mesh_with_a_hairline_pair()
+    assert mesh.is_watertight, "testmodellen var trasig redan från början"
+
+    path = mesh_io.save_stl(mesh, tmp_path / "platta.stl")
+    back = trimesh.load(path)
+
+    assert back.is_watertight
+    assert mesh_io.bad_edges(back) == (0, 0)
+
+
+def test_the_export_does_not_move_the_model(tmp_path):
+    """Städningen sker under skrivarens upplösning och får inte synas i måtten."""
+    import trimesh
+
+    mesh = _mesh_with_a_hairline_pair()
+
+    path = mesh_io.save_stl(mesh, tmp_path / "platta.stl")
+    back = trimesh.load(path)
+
+    assert back.extents == pytest.approx(mesh.extents, abs=0.001)
+    assert back.volume == pytest.approx(mesh.volume, rel=1e-6)
+
+
+def test_a_real_crack_is_not_silently_welded(tmp_path):
+    """Städningen är till för flyttalsbrus, inte för att dölja riktiga hål.
+
+    En springa på en tiondels millimeter är ett fel i modellen och ska
+    fortfarande synas efter exporten, inte sopas undan.
+    """
+    import trimesh
+
+    mesh = _mesh_with_a_hairline_pair(offset_mm=0.1)
+
+    path = mesh_io.save_stl(mesh, tmp_path / "springa.stl")
+    back = trimesh.load(path)
+
+    assert back.extents[0] == pytest.approx(280.1, abs=0.01)
+
+
+def test_3mf_is_written_as_3mf(tmp_path):
+    """3MF-exporten ska skriva en riktig 3MF, inte falla tillbaka på STL."""
+    import trimesh
+
+    mesh = trimesh.creation.box(extents=(40.0, 30.0, 20.0))
+
+    path = mesh_io.save_3mf(mesh, tmp_path / "lada.3mf")
+
+    assert path.suffix == ".3mf", "föll tillbaka på STL"
+    back = trimesh.load(path)
+    back = back.to_geometry() if isinstance(back, trimesh.Scene) else back
+    assert back.is_watertight
+    assert back.extents == pytest.approx(mesh.extents, abs=0.001)
+
+
+def test_separate_objects_are_not_unioned(tmp_path):
+    """Två kroppar som ligger isär är skilda objekt, inte ett fel att laga.
+
+    Att boolea ihop dem var både onödigt och riskabelt på en stor modell, och
+    gav dessutom en missvisande reparationsrad.
+    """
+    a = trimesh.creation.box(extents=(20.0, 20.0, 20.0))
+    b = trimesh.creation.box(extents=(20.0, 20.0, 20.0))
+    b.apply_translation([100.0, 0.0, 0.0])
+    path = tmp_path / "tva.stl"
+    trimesh.util.concatenate([a, b]).export(path)
+
+    info = mesh_io.load_mesh(path)
+
+    assert info.watertight
+    assert mesh_io.bad_edges(info.mesh) == (0, 0)
+    assert not any("slog ihop" in action for action in info.repairs)
+
+
+def test_touching_bodies_are_still_unioned(tmp_path):
+    """Regressionsskydd: kroppar som möts måste fortfarande slås ihop.
+
+    Utan unionen delar kanterna där de möts fyra trianglar, och slicern
+    rapporterar non-manifold edges - felet som gav "141 non-manifold edges".
+    """
+    a = trimesh.creation.box(extents=(20.0, 20.0, 20.0))
+    b = trimesh.creation.box(extents=(20.0, 20.0, 20.0))
+    b.apply_translation([10.0, 0.0, 0.0])
+    path = tmp_path / "mots.stl"
+    trimesh.util.concatenate([a, b]).export(path)
+
+    info = mesh_io.load_mesh(path)
+
+    assert info.watertight
+    assert mesh_io.bad_edges(info.mesh) == (0, 0)
+    assert info.extents_mm[0] == pytest.approx(30.0, abs=0.01)
+    assert any("slog ihop" in action for action in info.repairs)

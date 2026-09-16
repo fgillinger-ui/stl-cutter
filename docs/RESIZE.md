@@ -193,6 +193,66 @@ python -m stl_cutter.cli resize hylla.stl --z 400 --distribute --min-span 30
 **`--span N`** är för när du vet bättre än programmet: växa bara nedtill, bara
 i den bortre sektionen, bara där kabeln ska dras.
 
+## Flera objekt i samma fil
+
+En CAD-fil innehåller ofta flera kroppar som hör ihop mekaniskt: en hylla och
+dess bakplatta, en låda och dess lock, en vänster- och en högerdel. Ändrar man
+måttet på den ena måste den andra följa med, annars slutar de passa.
+
+Kroppar som **möts** slås fortfarande ihop till en solid — där två ytor ligger
+mot varandra delar kanterna fyra trianglar, och slicern kallar det
+non-manifold. Kroppar som ligger **isär** behandlas däremot som skilda objekt
+och räknas upp var för sig.
+
+### Regeln: samma tillskott, inte samma mått
+
+Det är den bärande regeln, och den är lätt att få om bakfoten.
+
+| | Före | Efter |
+|---|---|---|
+| Hyllan (ledare, du skriver måttet här) | 230 mm | **270 mm** |
+| Bakplattan (följer med) | 250 mm | **290 mm** |
+
+Bakplattan blir 290, inte 270. Fick den också 270 skulle spåren flytta *inåt*
+och inte längre möta hyllans stolpar. Det är tillskottet — här +40 mm — som är
+gemensamt.
+
+Att det räcker med tillskottet följer av hur måttändringen arbetar: materialet
+läggs symmetriskt kring modellens mitt, och varje detalj behåller sitt avstånd
+till närmaste kant. Två objekt som får samma tillskott flyttar därför sina
+detaljer lika långt åt samma håll.
+
+### I gränssnittet
+
+Innehåller filen flera objekt dyker en rullgardin **Objekt** upp i rutan
+*1b. Ändra mått*, tillsammans med kryssrutan *Låt övriga objekt följa med
+symmetriskt*. Måttfälten visar det valda objektets mått, inte hela filens
+låda. Kryssa ur rutan för att ändra bara det valda objektet.
+
+### På kommandoraden
+
+```bash
+# Objekt 2 ska bli 270 mm brett; övriga objekt får samma tillskott
+stl-cutter resize nas.3mf --x 270 --part 2 --out ut/nas.stl
+
+# Bara objekt 2, lämna resten i fred
+stl-cutter resize nas.3mf --x 270 --part 2 --no-link --out ut/nas.stl
+```
+
+Varje objekt skrivs som en egen fil, numrerad `_01`, `_02` och så vidare.
+
+### Passningskontrollen
+
+Efter ändringen letas varje objekts **styrningar** upp — spår, urtag och
+laxstjärtar syns som svackor i tvärsnittsarean — och avståndet mellan den
+yttersta styrningen på var sida jämförs före och efter. Har två objekts
+styrningar flyttat olika långt kommer en varning.
+
+Alla objekt har inte mätbara spår. En hylla möter sin bakplatta med stolparna
+ytterst, och dem flyttar måttändringen aldrig i förhållande till kanten. Då
+finns det inget att jämföra, och programmet säger det rakt ut i stället för
+att låta tystnaden se ut som ett godkänt svar.
+
 ## Vad som kontrolleras
 
 Efter varje måttändring körs sex kontroller, och **ingenting levereras om
