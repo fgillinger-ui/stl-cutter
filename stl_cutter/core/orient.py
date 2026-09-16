@@ -43,6 +43,7 @@ log = logging.getLogger(__name__)
 
 __all__ = [
     "AXIS_POSES",
+    "contact_area",
     "flat_transform",
     "lay_flat",
     "describe_orientation",
@@ -74,7 +75,7 @@ def _transform_for(axis: int, sign: float) -> np.ndarray:
     return trimesh.geometry.align_vectors(_direction(axis, sign), [0.0, 0.0, -1.0])
 
 
-def _footprint(vertices: np.ndarray) -> float:
+def contact_area(vertices: np.ndarray) -> float:
     """Anliggningens area, i mm².
 
     Punkterna närmast plattan projiceras och deras konvexa hölje mäts. En del
@@ -93,6 +94,11 @@ def _footprint(vertices: np.ndarray) -> float:
         low = resting.min(axis=0)
         high = resting.max(axis=0)
         return float(np.prod(high - low))
+
+
+#: Internt namn sedan tidigare. `contact_area` är samma sak, men behövs även
+#: utifrån: planeraren måste kunna se att ett läge bara vilar på en smal kant.
+_footprint = contact_area
 
 
 def flat_transform(mesh: trimesh.Trimesh) -> tuple[np.ndarray, float]:

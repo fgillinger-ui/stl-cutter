@@ -128,8 +128,13 @@ def write_plan_only(
     return report_file
 
 
-def export_model(meshes, path: str | Path, file_format: str | None = None) -> list[Path]:
-    """Skriv modellen som den är, utan att dela den.
+def export_model(
+    meshes,
+    path: str | Path,
+    file_format: str | None = None,
+    lay_flat: bool = True,
+) -> list[Path]:
+    """Skriv modellen utan att dela den, vänd platt inför utskrift.
 
     Det vanliga flödet kapar modellen, men efter en måttändring vill man ofta
     bara ha ut den ändrade modellen - den kanske får plats på plattan som den
@@ -138,6 +143,13 @@ def export_model(meshes, path: str | Path, file_format: str | None = None) -> li
     `meshes` är en mesh eller en lista av meshar (filens objekt). Med flera
     objekt numreras filerna `<namn>_01`, `<namn>_02` och så vidare, precis som
     `resize` på kommandoraden gör, så att varje objekt blir en egen utskrift.
+
+    Med `lay_flat` (standard) läggs varje objekt i sitt plattaste axelriktade
+    läge, precis som delarna får efter en kapning. Det är nästan alltid det man
+    vill: en hyllplatta som står upp i CAD-filen kom tidigare ut stående, och
+    då skriver slicern den på högkant med stöd överallt och lagren tvärs den
+    riktning lasten böjer den. Vill man ha filen i modellens eget läge - för
+    att ta den tillbaka in i CAD - stängs vändningen av.
 
     Formatet följer filändelsen om inget annat anges. Returnerar sökvägarna
     som faktiskt skrevs - 3MF kan falla tillbaka på STL om biblioteksstödet
@@ -155,6 +167,9 @@ def export_model(meshes, path: str | Path, file_format: str | None = None) -> li
         raise ValueError(f"Okänt filformat: {fmt!r}. Använd stl eller 3mf.")
 
     path.parent.mkdir(parents=True, exist_ok=True)
+
+    if lay_flat:
+        meshes = [orient_core.lay_flat(mesh)[0] for mesh in meshes]
 
     written: list[Path] = []
     for index, mesh in enumerate(meshes, start=1):

@@ -26,6 +26,12 @@ log = logging.getLogger(__name__)
 
 AXIS_NAMES = ("X", "Y", "Z")
 
+#: Hur stor anliggning ett läge minst måste ha för att räknas som utskrivbart,
+#: som andel av den största anliggning modellen kan få. Under det balanserar
+#: modellen på en kant: mycket stöd, dålig vidhäftning, och lagren hamnar
+#: tvärs den riktning den belastas i.
+STABLE_CONTACT_FRACTION = 0.25
+
 #: Vikter för poängsättningen av kandidatplan. Alla är straff (högre = sämre)
 #: och kan justeras av anroparen via `score_config`.
 SCORE_WEIGHTS = {
@@ -192,6 +198,9 @@ class SplitPlan:
     #: Lastfallet snitten planerades mot, i planens koordinatsystem. None när
     #: ingen last angetts.
     load: LoadCase | None = None
+    #: Upplysning om ett läge som hade gett färre delar men inte går att
+    #: skriva ut. Tom när det inte fanns något sådant val att berätta om.
+    orientation_note: str = ""
 
     @property
     def planes(self) -> list[Plane]:
@@ -216,6 +225,7 @@ class SplitPlan:
             "divisions": {"X": self.divisions[0], "Y": self.divisions[1], "Z": self.divisions[2]},
             "part_count": self.part_count,
             "load": self.load.to_dict() if self.load is not None else None,
+            "orientation_note": self.orientation_note,
             "planes": [p.to_dict() for p in self.planes],
             "cuts": [c.to_dict() for c in self.cuts],
             "part_boxes": [b.to_dict() for b in self.part_boxes],
@@ -229,6 +239,8 @@ class SplitPlan:
             f"Uppdelning: {self.divisions[0]} x {self.divisions[1]} x {self.divisions[2]} "
             f"= {self.part_count} delar",
         ]
+        if self.orientation_note:
+            lines.append(f"  {self.orientation_note}")
         if self.load is not None and self.load.active:
             from .load import describe_load_case
 
@@ -306,10 +318,39 @@ def _extents_after(mesh: trimesh.Trimesh, transform: np.ndarray):
     return points.max(axis=0) - points.min(axis=0)
 
 
+def _pose_metrics(mesh: trimesh.Trimesh, transform: np.ndarray):
+    """(mått, bygghöjd, anliggning) för modellen i ett givet läge."""
+    from .orient import contact_area
+
+    points = trimesh.transform_points(np.asarray(mesh.vertices, dtype=float), transform)
+    extents = points.max(axis=0) - points.min(axis=0)
+    return extents, float(extents[2]), contact_area(points)
+
+
 def best_fit_orientation(
     mesh: trimesh.Trimesh, printer: PrinterProfile, step_deg: float = 15.0
-) -> tuple[np.ndarray, str, int]:
-    """Testa rotationer runt X/Y/Z samt PCA och välj den som ger minst antal delar."""
+) -> tuple[np.ndarray, str, int, str]:
+    """Välj det läge som ger minst antal delar - men bara bland lägen som går
+    att skriva ut.
+
+    Tidigare vann minsta antal delar rakt av, och det gav orimliga svar. En
+    hyllplatta 270 x 10 x 180 mm "fick plats" på en 246 mm plåt genom att
+    ställas upp på sin 10 mm-kant och vridas 120° - ett läge där den vilar på
+    2700 mm² i stället för 48 600, står 180 mm högt, och får alla lager tvärs
+    den riktning lasten böjer den. Formellt en del. I praktiken ett läge ingen
+    skriver ut, och exportfilen var dessutom inte vriden så slicern förkastade
+    den ändå.
+
+    Därför gallras lägen som bara vilar på en smal kant bort, mätt som verklig
+    anliggning mot plattan - inte som bounding box, som inte kan skilja en
+    platta som ligger ner från en som balanserar på kant. Bland de kvarvarande
+    vinner minst antal delar, sedan lägst bygghöjd.
+
+    Returnerar (transform, namn, antal delar, upplysning). Upplysningen är
+    tom utom när gallringen kostade en extra del - då står det i klartext att
+    modellen hade rymts hel på högkant, för det är användarens beslut och inte
+    programmets.
+    """
     candidates: list[tuple[str, np.ndarray]] = [("original", np.eye(4))]
     steps = int(round(180.0 / step_deg))
     for axis in range(3):
@@ -321,18 +362,47 @@ def best_fit_orientation(
     except np.linalg.LinAlgError as exc:  # pragma: no cover - degenererad geometri
         log.warning("PCA-orientering misslyckades: %s", exc)
 
-    best = None
+    scored = []
     for name, transform in candidates:
-        extents = _extents_after(mesh, transform)
-        count = part_count_for(extents, printer)
-        waste = float(np.prod(extents))
-        key = (count, waste)
-        if best is None or key < best[0]:
-            best = (key, name, transform, count)
+        extents, height, contact = _pose_metrics(mesh, transform)
+        scored.append(
+            {
+                "name": name,
+                "transform": transform,
+                "count": part_count_for(extents, printer),
+                "height": height,
+                "contact": contact,
+                "waste": float(np.prod(extents)),
+            }
+        )
 
-    _, name, transform, count = best
-    log.info("Vald orientering: %s (%d delar)", name, count)
-    return transform, name, count
+    widest = max(pose["contact"] for pose in scored)
+    steady = [
+        pose
+        for pose in scored
+        if widest <= 0 or pose["contact"] >= STABLE_CONTACT_FRACTION * widest
+    ]
+    # Balanserar varje läge på en kant är det inget att välja mellan - då får
+    # den ursprungliga rangordningen gälla, som förut.
+    pool = steady or scored
+
+    def rank(pose):
+        return (pose["count"], round(pose["height"], 3), pose["waste"])
+
+    best = min(pool, key=rank)
+    note = ""
+    cheapest = min(scored, key=lambda pose: pose["count"])
+    if cheapest["count"] < best["count"]:
+        note = (
+            f"Modellen hade rymts i {cheapest['count']} del(ar) i läget "
+            f"{cheapest['name']}, men då vilar den bara på "
+            f"{cheapest['contact']:.0f} mm² och står {cheapest['height']:.0f} mm "
+            f"högt. Den delas hellre i {best['count']} delar och skrivs liggande."
+        )
+        log.info(note)
+
+    log.info("Vald orientering: %s (%d delar)", best["name"], best["count"])
+    return best["transform"], best["name"], best["count"], note
 
 
 # --------------------------------------------------------------------------
@@ -616,9 +686,11 @@ def plan_splits(
     """
     report(progress, 0.0, "Beräknar bästa orientering")
     if auto_orient:
-        transform, orientation_name, _ = best_fit_orientation(mesh, printer, step_deg=step_deg)
+        transform, orientation_name, _, orientation_note = best_fit_orientation(
+            mesh, printer, step_deg=step_deg
+        )
     else:
-        transform, orientation_name = np.eye(4), "original"
+        transform, orientation_name, orientation_note = np.eye(4), "original", ""
 
     oriented = mesh.copy()
     oriented.apply_transform(transform)
@@ -691,6 +763,7 @@ def plan_splits(
         printer_name=printer.name,
         assembly_intent=assembly_intent,
         load=plan_load,
+        orientation_note=orientation_note,
     )
 
 

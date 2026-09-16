@@ -3,6 +3,7 @@ import pytest
 import trimesh
 
 from stl_cutter.core.planner import (
+    _extents_after,
     best_fit_orientation,
     divisions_for,
     part_count_for,
@@ -49,7 +50,7 @@ def test_best_fit_orientation_reduces_part_count(printer):
     rod.apply_transform(trimesh.transformations.rotation_matrix(np.radians(45), [0, 0, 1]))
 
     naive = part_count_for(rod.extents, printer)
-    _, name, count = best_fit_orientation(rod, printer)
+    _, name, count, _note = best_fit_orientation(rod, printer)
 
     assert count < naive
     assert count == 3
@@ -249,3 +250,54 @@ def test_a_tilted_cut_is_carried_through_the_whole_pipeline(printer):
     assert result.all_watertight
     assert len(result.joints) == 1
     assert result.joints[0].applied, "fogen ska byggas även på ett vinklat snitt"
+
+
+def test_a_plate_is_not_stood_on_edge_to_avoid_a_cut(printer):
+    """Verkligt fall: en hyllplatta 270 x 10 x 180 mm mot en 246 mm plåt.
+
+    Programmet "löste" det genom att ställa plattan på sin 10 mm-kant och
+    vrida den 120° - formellt en enda del, men ett läge där den vilar på
+    2700 mm² i stället för 48 600, står 180 mm högt, och får alla lager tvärs
+    den riktning lasten böjer den. Slicern förkastade dessutom filen, för
+    exporten var inte vriden. Rätt svar är att lägga plattan ner och kapa den.
+    """
+    plate = trimesh.creation.box(extents=[270.0, 10.0, 180.0])
+
+    transform, _name, count, note = best_fit_orientation(plate, printer)
+
+    height = float(_extents_after(plate, transform)[2])
+    assert height == pytest.approx(10.0, abs=0.1), "plattan ligger inte ner"
+    assert count == 2, "en liggande platta på 270 mm måste kapas"
+    assert "hade rymts" in note, "valet att kapa i stället måste sägas ut"
+
+
+def test_the_cheaper_but_unprintable_pose_is_named(printer):
+    """Upplysningen ska vara användbar: hur många delar det gällde, och varför
+    läget valdes bort."""
+    plate = trimesh.creation.box(extents=[270.0, 10.0, 180.0])
+
+    *_, note = best_fit_orientation(plate, printer)
+
+    assert "1 del" in note
+    assert "mm²" in note and "högt" in note
+
+
+def test_a_box_that_fits_is_left_alone(printer):
+    """Gallringen får inte börja vrida på modeller som redan är färdiga."""
+    box = trimesh.creation.box(extents=[100.0, 100.0, 100.0])
+
+    _transform, name, count, note = best_fit_orientation(box, printer)
+
+    assert count == 1
+    assert name == "original"
+    assert note == ""
+
+
+def test_the_note_reaches_the_plan(printer):
+    plate = trimesh.creation.box(extents=[270.0, 10.0, 180.0])
+
+    plan = plan_splits(plate, printer, analyse=False)
+
+    assert "hade rymts" in plan.orientation_note
+    assert "hade rymts" in plan.describe()
+    assert plan.to_dict()["orientation_note"]
