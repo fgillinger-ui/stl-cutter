@@ -2153,3 +2153,50 @@ def test_the_gui_export_lays_the_model_flat(qapp, window, tmp_path, monkeypatch)
 
     assert window.lay_flat_check.isChecked()
     assert trimesh.load(target).extents[2] == pytest.approx(10.0, abs=0.01)
+
+
+def test_the_profile_button_needs_a_load(window):
+    """Utan last finns inga hållfasthetsinställningar att skriva."""
+    assert not window.profile_button.isEnabled()
+
+    window.load_check.setChecked(True)
+
+    assert window.profile_button.isEnabled()
+
+
+def test_the_gui_writes_a_slicer_profile(qapp, window, model_file, tmp_path, monkeypatch):
+    import json
+
+    from PySide6.QtWidgets import QFileDialog, QInputDialog
+
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+    window.load_check.setChecked(True)
+    window.load_weight.setValue(5.0)
+
+    monkeypatch.setattr(
+        QInputDialog, "getText", staticmethod(lambda *a, **k: ("0.20mm Standard @FF C5", True))
+    )
+    monkeypatch.setattr(
+        QFileDialog, "getExistingDirectory", staticmethod(lambda *a, **k: str(tmp_path))
+    )
+    window.save_slicer_profile()
+
+    written = list(tmp_path.glob("*process.json"))
+    assert written, "ingen profil skrevs"
+    assert json.loads(written[0].read_text(encoding="utf-8"))["wall_loops"] == "5"
+    # Namnet på basprofilen ska komma ihåg till nästa gång.
+    assert window.settings.base_profile == "0.20mm Standard @FF C5"
+
+
+def test_a_cancelled_profile_dialog_writes_nothing(qapp, window, model_file, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QInputDialog
+
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+    window.load_check.setChecked(True)
+
+    monkeypatch.setattr(QInputDialog, "getText", staticmethod(lambda *a, **k: ("", False)))
+    window.save_slicer_profile()
+
+    assert not list(tmp_path.glob("*.json"))
