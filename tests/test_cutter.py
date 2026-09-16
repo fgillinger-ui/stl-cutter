@@ -235,6 +235,62 @@ def test_build_volume_slack_uses_sorted_dimensions(printer):
     assert build_volume_slack(part, printer) == pytest.approx(6.0)
 
 
+def test_the_slack_is_measured_in_the_direction_the_joint_grows(printer):
+    """Verkligt fall: en hyllram 240 x 195 x 176 mm mot 246 mm användbart.
+
+    Fogens nyckel sticker ut längs snittets normal, alltså Y. Där finns 51 mm
+    att ta av. Mätt över alla axlar blir svaret i stället 6 mm - marginalen i
+    X, en riktning fogen inte rör - och laxstjärten vägrades av det skälet.
+    """
+    import trimesh
+
+    from stl_cutter.core.cutter import Part, build_volume_slack
+
+    part = Part(index=1, mesh=trimesh.creation.box(extents=[240.0, 195.0, 176.0]))
+
+    assert build_volume_slack(part, printer) == pytest.approx(6.0)
+    assert build_volume_slack(part, printer, axis=1) == pytest.approx(51.0, abs=0.05)
+
+
+def test_growing_a_part_is_still_refused_when_it_would_not_fit(printer):
+    """Fixen får inte bli ett fribrev: växer delen i sin trängsta riktning
+    ska svaret fortfarande vara litet."""
+    import trimesh
+
+    from stl_cutter.core.cutter import Part, build_volume_slack
+
+    part = Part(index=1, mesh=trimesh.creation.box(extents=[240.0, 195.0, 176.0]))
+
+    assert build_volume_slack(part, printer, axis=0) == pytest.approx(6.0, abs=0.05)
+
+
+def test_a_part_that_already_does_not_fit_gets_no_room(printer):
+    import trimesh
+
+    from stl_cutter.core.cutter import Part, build_volume_slack
+
+    part = Part(index=1, mesh=trimesh.creation.box(extents=[300.0, 100.0, 50.0]))
+
+    assert build_volume_slack(part, printer, axis=1) < 0
+
+
+def test_a_wide_frame_still_gets_its_dovetail(printer):
+    """Hela kedjan för det fall som gick fel: fogen ska byggas, och delarna
+    ska ändå få plats på plattan efteråt."""
+    import trimesh
+
+    from stl_cutter.core.planner import make_cut, plan_from_cuts
+
+    frame = trimesh.creation.box(extents=[240.0, 264.0, 176.0])
+    cut = make_cut(frame, axis=1, position=frame.bounds[0][1] + 195.0, printer=printer)
+    plan = plan_from_cuts(frame, printer, [cut], assembly_intent="demountable")
+
+    result = cut_mesh(frame, plan, joints=True, printer=printer, force_joint="dovetail")
+
+    assert [j.applied for j in result.joints] == [True], result.warnings
+    assert parts_fit(result, printer) == [], "delarna ska fortfarande få plats"
+
+
 def test_joints_never_push_a_part_out_of_the_build_volume(printer):
     """En fog som gör delen för stor löser inget - den byter bara problem."""
     import trimesh
