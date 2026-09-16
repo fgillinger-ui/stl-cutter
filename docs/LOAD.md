@@ -122,6 +122,24 @@ Skälet är detsamma som ovan: rådet är "+5 till +10 °C över det normala", o
 vad som är normalt beror på om det är PLA (215), PETG (235) eller ASA (255).
 Utan den uppgiften skrivs ingen filamentprofil, och det står varför.
 
+### Om importen säger "0 configs imported"
+
+Slicern säger inte vad som är fel, så här är vad den faktiskt kontrollerar
+(avläst ur `PresetBundle::import_json_presets` i OrcaSlicers källkod):
+
+1. **`version` måste finnas** och gå att tolka som ett versionsnummer. Saknas
+   det avbryts inläsningen före allt annat. Programmet skriver det åt dig.
+2. **Profiltypen avgörs av id-fältet**, inte av `type`: `print_settings_id`
+   för en processprofil, `filament_settings_id` för en filamentprofil.
+3. **`inherits` måste peka på en profil som verkligen finns** i slicern, stavad
+   exakt som i rullgardinen — `- Copy` på slutet räknas. Hittas den inte
+   hoppas profilen över med *"can not find inherit preset for user preset"*.
+4. **Rätt skrivare måste vara vald** innan du importerar. Kompatibiliteten ärvs
+   från basprofilen, så med en annan skrivare vald filtreras profilen bort.
+
+Filen skrivs exakt som slicern själv skriver sina användarprofiler. Går
+importen ändå tomt är det punkt 3 eller 4 som gäller.
+
 ## Marginal
 
 Ska lasten vara stor: provbelasta, med marginal, innan något dyrt ställs på

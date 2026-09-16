@@ -28,7 +28,6 @@ def test_the_keys_are_the_ones_orca_reads():
     """Exakt de nycklar OrcaSlicers egna profiler använder."""
     out = profile_core.process_profile(shelf_load(), "0.20mm Standard @FF C5")
 
-    assert out["type"] == "process"
     assert out["inherits"] == "0.20mm Standard @FF C5"
     for key in (
         "wall_loops",
@@ -39,6 +38,37 @@ def test_the_keys_are_the_ones_orca_reads():
         "layer_height",
     ):
         assert key in out, f"{key} saknas - slicern skulle inte sätta något"
+
+
+def test_the_version_is_there_and_parseable():
+    """Utan version avbryter slicern inläsningen på rad tre och säger bara
+    "There are 0 configs imported" - det felet kostade en runda."""
+    out = profile_core.process_profile(shelf_load(), "bas")
+
+    assert "version" in out
+    parts = out["version"].split(".")
+    assert len(parts) >= 3 and all(p.isdigit() for p in parts)
+
+
+def test_the_type_comes_from_the_id_field_not_from_type():
+    """OrcaSlicer avgör profiltypen av vilket id-fält som finns, inte av
+    fältet "type". Saknas id:t blir det "Preset type is unknown"."""
+    process = profile_core.process_profile(shelf_load(), "bas", name="Hylla")
+    filament = profile_core.filament_profile(shelf_load(), "bas", 235.0, name="Hylla")
+
+    assert process["print_settings_id"] == "Hylla"
+    assert filament["filament_settings_id"] == ["Hylla"]
+    assert "filament_settings_id" not in process
+    assert "print_settings_id" not in filament
+
+
+def test_vendor_only_fields_are_left_out():
+    """"type" och "instantiation" hör till leverantörsprofiler. Slicern
+    plockar bort dem ur en användarprofil och loggar det som ett fel."""
+    out = profile_core.process_profile(shelf_load(), "bas")
+
+    assert "type" not in out
+    assert "instantiation" not in out
 
 
 def test_every_value_is_a_string():
@@ -95,7 +125,6 @@ def test_filament_values_are_lists_of_strings():
     """I filamentprofiler är varje värde en lista - en post per extruder."""
     out = profile_core.filament_profile(shelf_load(), "PETG-bas", 235.0)
 
-    assert out["type"] == "filament"
     assert out["nozzle_temperature"] == ["243"]
     assert out["nozzle_temperature_initial_layer"] == ["243"]
     assert out["fan_max_speed"] == ["50"]
@@ -145,15 +174,26 @@ def test_both_files_are_written_when_the_filament_is_known(tmp_path):
 
     assert len(bundle.files) == 2
     assert not bundle.notes
-    kinds = {json.loads(p.read_text(encoding="utf-8"))["type"] for p in bundle.files}
-    assert kinds == {"process", "filament"}
+    ids = set()
+    for path in bundle.files:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        ids |= {k for k in data if k.endswith("_settings_id")}
+    assert ids == {"print_settings_id", "filament_settings_id"}
 
 
 def test_the_name_survives_as_a_filename(tmp_path):
-    """Svenska tecken i namnet ska inte ge ett filnamn som inte går att öppna."""
+    """Svenska tecken i namnet ska inte ge ett filnamn som inte går att öppna.
+
+    Slicern använder dessutom profilnamnet som filnamn när den sparar, och
+    vägrar ett namn med sökvägstecken - så det måste städas i filen också,
+    inte bara på disken.
+    """
     bundle = profile_core.write_profiles(
         shelf_load(), tmp_path, base_profile="bas", name="Hylla åäö / NAS"
     )
 
     assert bundle.files[0].exists()
     assert "/" not in bundle.files[0].name
+    data = json.loads(bundle.files[0].read_text(encoding="utf-8"))
+    assert "/" not in data["name"]
+    assert data["name"] == data["print_settings_id"]
