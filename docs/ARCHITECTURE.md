@@ -27,6 +27,8 @@ stl_cutter/
     recommender.py    # välj fogtyp utifrån snittytan och monteringsavsikt  [fas 2]
     resize.py         # ändra ett mått utan att deformera godset            [fas 3B]
     assembly.py       # flera objekt i filen som ändrar mått tillsammans
+    orient.py         # vänd en kapad del platt inför utskrift
+    load.py           # var en belastad modell helst inte ska kapas
     planner.py        # orientering, kandidatplan, poängsättning
     cutter.py         # utför plansnitten, parar ihop grannar, bygger fogar
     exporter.py       # skriver part_NN.stl + split_report.json

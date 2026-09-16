@@ -81,6 +81,7 @@ def test_window_starts_with_the_workflow_in_order(window):
         "1b. Ändra mått",
         "2. Skrivare",
         "3. Montering",
+        "3b. Belastning",
         "4. Förslag",
         "5. Kapa och exportera",
     ]
@@ -2024,3 +2025,104 @@ def test_a_cancelled_export_writes_nothing(qapp, window, tmp_path, monkeypatch):
     window.export_model()
 
     assert list(tmp_path.glob("*_ändrad.stl")) == []
+
+
+def test_the_cut_export_lays_parts_flat_by_default(qapp, window, model_file, tmp_path):
+    """Delarna ska komma ut platta utan att man behöver ställa något."""
+    import trimesh
+
+    window.settings.last_output_dir = str(tmp_path / "ut")
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+    assert window.lay_flat_check.isChecked()
+    assert window.split_bodies_check.isChecked()
+
+    window.start_analysis()
+    wait_for_worker(qapp, window)
+    window.start_cut()
+    wait_for_worker(qapp, window)
+
+    written = sorted((tmp_path / "ut").glob("part_*.stl"))
+    assert written, "inga delar skrevs"
+    for path in written:
+        mesh = trimesh.load(path)
+        assert mesh.extents[2] == pytest.approx(min(mesh.extents), abs=0.01), (
+            f"{path.name} ligger inte platt"
+        )
+
+
+# --------------------------------------------------------------------------
+# 3b. Belastning
+# --------------------------------------------------------------------------
+
+
+def test_the_load_box_is_off_until_it_is_asked_for(window):
+    """Ingen som inte bygger en hylla ska behöva bry sig om rutan."""
+    assert not window.load_check.isChecked()
+    assert not window.load_weight.isEnabled()
+    assert window.current_load() is None
+
+
+def test_the_guess_is_shown_with_its_reason(qapp, window, model_file):
+    """Fel upphängning vänder momentkurvan helt. Gissningen får därför aldrig
+    gå igenom osedd - den ska stå i rutan med skälet till den."""
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+
+    window.load_check.setChecked(True)
+
+    case = window.current_load()
+    assert case is not None and case.active
+    assert case.axis == 0, "längsta vågräta axeln på en 600 x 200 x 100-låda är X"
+    text = window.load_guess_label.text()
+    assert "Gissat:" in text and "Rätta" in text
+
+
+def test_the_user_wins_over_the_guess(qapp, window, model_file):
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+    window.load_check.setChecked(True)
+
+    window.support_combo.setCurrentIndex(
+        window.support_combo.findData("both_ends")
+    )
+    window.load_axis_combo.setCurrentIndex(window.load_axis_combo.findData(1))
+
+    case = window.current_load()
+    assert case.support == "both_ends"
+    assert case.axis == 1
+    assert case.guessed_from == "", "ett eget val ska inte presenteras som en gissning"
+    assert "Gissat:" not in window.load_guess_label.text()
+
+
+def test_a_load_moves_the_cut(qapp, window, model_file):
+    """Funktionens hela syfte: samma modell och skrivare, men snittet hamnar
+    inte på den hårdast belastade punkten."""
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+    window.start_analysis()
+    wait_for_worker(qapp, window)
+    plain = window.plan.cuts[0].plane.position
+
+    window.load_check.setChecked(True)
+    window.load_weight.setValue(5.0)
+    window.support_combo.setCurrentIndex(window.support_combo.findData("cantilever"))
+    window.load_axis_combo.setCurrentIndex(window.load_axis_combo.findData(0))
+    window.load_end_combo.setCurrentIndex(window.load_end_combo.findData(True))
+    window.start_analysis()
+    wait_for_worker(qapp, window)
+
+    loaded = window.plan.cuts[0].plane.position
+    assert loaded > plain + 10.0, f"snittet flyttade bara {loaded - plain:.1f} mm"
+    assert window.plan.load is not None
+
+
+def test_no_load_leaves_the_plan_as_it_was(qapp, window, model_file):
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+
+    window.start_analysis()
+    wait_for_worker(qapp, window)
+
+    assert window.plan.load is None
+    assert "load" not in (window.plan.cuts[0].score.penalties or {})

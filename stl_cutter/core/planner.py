@@ -17,6 +17,7 @@ import numpy as np
 import trimesh
 
 from .analysis import SectionAnalysis, analyse_section
+from .load import LoadCase, relative_moment, transformed_load
 from .printers import PrinterProfile
 from .progress import report
 from .recommender import AssemblyIntent, JointRecommendation, recommend_joint
@@ -42,6 +43,12 @@ SCORE_WEIGHTS = {
     "offset": 4.0,
     # En del som fyller byggplattan helt lämnar ingen plats för fogen.
     "joint_room": 15.0,
+    # Kapa inte där en angiven last böjer modellen som mest. Straffet är
+    # `vikten * relativt moment`, alltså 0 till 60, och ligger därmed i samma
+    # storleksordning som de geometriska straffen: det väger alltid tyngre än
+    # avvikelsen från jämn fördelning (`offset`, högst 4) men kan vägas upp av
+    # en riktigt tunn vägg eller många öar i snittet. Noll utan angiven last.
+    "load": 60.0,
 }
 
 #: Konfiguration för kandidatsökningen.
@@ -54,6 +61,9 @@ SCORE_CONFIG = {
     "area_max_mm2": 20000.0,
     "min_part_fraction": 0.05,  # skiva tunnare än 5 % av axeln straffas
     "joint_room_mm": 12.0,  # utrymme som helst ska finnas kvar till fogen
+    # Med en last angiven får snittet leta längre bort från nominalläget - det
+    # är hela poängen med att känna lasten.
+    "load_search_fraction": 0.30,
 }
 
 
@@ -179,6 +189,9 @@ class SplitPlan:
     bounds: np.ndarray = field(default_factory=lambda: np.zeros((2, 3)))
     printer_name: str = ""
     assembly_intent: str = "glue"
+    #: Lastfallet snitten planerades mot, i planens koordinatsystem. None när
+    #: ingen last angetts.
+    load: LoadCase | None = None
 
     @property
     def planes(self) -> list[Plane]:
@@ -202,6 +215,7 @@ class SplitPlan:
             ],
             "divisions": {"X": self.divisions[0], "Y": self.divisions[1], "Z": self.divisions[2]},
             "part_count": self.part_count,
+            "load": self.load.to_dict() if self.load is not None else None,
             "planes": [p.to_dict() for p in self.planes],
             "cuts": [c.to_dict() for c in self.cuts],
             "part_boxes": [b.to_dict() for b in self.part_boxes],
@@ -215,6 +229,10 @@ class SplitPlan:
             f"Uppdelning: {self.divisions[0]} x {self.divisions[1]} x {self.divisions[2]} "
             f"= {self.part_count} delar",
         ]
+        if self.load is not None and self.load.active:
+            from .load import describe_load_case
+
+            lines.append(f"Last: {describe_load_case(self.load)}")
         if not self.cuts:
             lines.append("Modellen får plats som den är - inga snitt behövs.")
         for cut in self.cuts:
@@ -353,14 +371,18 @@ def candidate_positions(
     axis_length: float,
     window: tuple[float, float],
     config: dict | None = None,
+    wide: bool = False,
 ) -> list[float]:
     """Kandidatlägen i ett intervall runt `nominal`, i steg om `step_mm`.
 
     `window` är det tillåtna intervallet (lägsta, högsta) som håller antalet
-    delar oförändrat. Nominalpositionen är alltid med.
+    delar oförändrat. Nominalpositionen är alltid med. Med `wide` söks ett
+    större område - det används när en last gör det värt att flytta snittet
+    längre.
     """
     cfg = {**SCORE_CONFIG, **(config or {})}
-    reach = cfg["search_fraction"] * axis_length
+    fraction = cfg["load_search_fraction"] if wide else cfg["search_fraction"]
+    reach = fraction * axis_length
     step = cfg["step_mm"]
 
     low = max(window[0], nominal - reach)
@@ -389,6 +411,9 @@ def score_candidate(
     config: dict | None = None,
     slabs_mm: tuple[float, float] | None = None,
     usable_mm: float | None = None,
+    load: LoadCase | None = None,
+    axis: int | None = None,
+    axis_range: tuple[float, float] | None = None,
 ) -> CandidateScore:
     """Poängsätt ett kandidatplan. Poängen är straff - lägre är bättre.
 
@@ -396,6 +421,12 @@ def score_candidate(
     axelns längd, och används som billig approximation av delvolymen.
     `slabs_mm` och `usable_mm` används för att hålla delarna en bit från
     byggvolymens gräns, så att fogen får plats att sticka ut.
+
+    `load` är ett lastfall i planens koordinatsystem. Ligger snittet längs
+    lastens spännaxel straffas lägen där böjmomentet är stort - en fog är
+    alltid svagare än helt gods, och den ska inte hamna på den hårdast
+    belastade punkten. Straffet är relativt (0 till 1) och säger ingenting om
+    hur mycket modellen bär; se `core.load`.
     """
     w = {**SCORE_WEIGHTS, **(weights or {})}
     cfg = {**SCORE_CONFIG, **(config or {})}
@@ -437,8 +468,24 @@ def score_candidate(
         if tightest < wanted:
             penalties["joint_room"] = w["joint_room"] * (wanted - max(tightest, 0.0)) / wanted
 
-    # Avvikelse från jämn fördelning.
-    reach = max(cfg["search_fraction"] * axis_length, 1e-6)
+    # Böjmomentet i snittläget, när lasten spänner längs just den här axeln.
+    # Ett snitt tvärs lasten böjs inte isär av den och lämnas i fred.
+    loaded_axis = (
+        load is not None
+        and load.active
+        and axis is not None
+        and axis == load.axis
+        and axis_range is not None
+    )
+    if loaded_axis:
+        moment = relative_moment(load, position, axis_range[0], axis_range[1])
+        if moment > 0.0:
+            penalties["load"] = w["load"] * moment
+
+    # Avvikelse från jämn fördelning. Nämnaren är samma sökvidd som
+    # kandidatlägena togs fram med - annars mäts avvikelsen mot fel skala.
+    fraction = cfg["load_search_fraction"] if loaded_axis else cfg["search_fraction"]
+    reach = max(fraction * axis_length, 1e-6)
     penalties["offset"] = w["offset"] * abs(position - nominal) / reach
 
     return CandidateScore(position, float(sum(penalties.values())), penalties, True)
@@ -454,6 +501,7 @@ def _optimise_axis(
     config: dict | None,
     progress=None,
     progress_span: tuple[float, float] = (0.0, 1.0),
+    load: LoadCase | None = None,
 ) -> list[tuple[Plane, SectionAnalysis, CandidateScore, float]]:
     """Välj snittlägen längs en axel, ett i taget, med bibehållet antal delar."""
     low, high = float(bounds[0][axis]), float(bounds[1][axis])
@@ -469,7 +517,8 @@ def _optimise_axis(
             max(low + 1e-3, high - (divisions - i) * usable),
             min(high - 1e-3, previous + usable),
         )
-        positions = candidate_positions(nominal, length, window, config)
+        loaded_axis = load is not None and load.active and load.axis == axis
+        positions = candidate_positions(nominal, length, window, config, wide=loaded_axis)
 
         best = None
         start, end = progress_span
@@ -496,6 +545,9 @@ def _optimise_axis(
                 config,
                 slabs_mm=(position - previous, (high - position) / max(remaining, 1)),
                 usable_mm=usable,
+                load=load,
+                axis=axis,
+                axis_range=(low, high),
             )
             if best is None or score.total < best[2].total:
                 best = (plane, analysis, score, nominal)
@@ -550,12 +602,17 @@ def plan_splits(
     weights: dict | None = None,
     score_config: dict | None = None,
     progress=None,
+    load: LoadCase | None = None,
 ) -> SplitPlan:
     """Ta fram en `SplitPlan`.
 
     Med `analyse=True` (standard) poängsätts kandidatplan och varje snitt får
     en analys och en fogrekommendation. Med `analyse=False` läggs snitten
     jämnt fördelade utan analys - snabbt, och det som fas 1 gjorde.
+
+    `load` är ett lastfall i **modellens** koordinatsystem; det räknas om till
+    planens innan det används. Är det angivet undviker snitten de lägen där
+    böjmomentet är störst.
     """
     report(progress, 0.0, "Beräknar bästa orientering")
     if auto_orient:
@@ -566,6 +623,9 @@ def plan_splits(
     oriented = mesh.copy()
     oriented.apply_transform(transform)
     bounds = np.asarray(oriented.bounds, dtype=float)
+    plan_load = (
+        transformed_load(load, transform) if load is not None and load.active else load
+    )
     extents = bounds[1] - bounds[0]
     divisions = divisions_for(extents, printer)
 
@@ -590,6 +650,7 @@ def plan_splits(
                 score_config,
                 progress=progress,
                 progress_span=span,
+                load=plan_load,
             )
         else:
             span = extents[axis] / count
@@ -629,6 +690,7 @@ def plan_splits(
         bounds=bounds,
         printer_name=printer.name,
         assembly_intent=assembly_intent,
+        load=plan_load,
     )
 
 
