@@ -14,10 +14,11 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 from .core import assembly as assembly_core
-from .core import exporter, mesh_io, resize as resize_core
+from .core import exporter, load as load_core, mesh_io, resize as resize_core
 from .core.cutter import cut_mesh, parts_fit
 from .core.planner import plan_splits
 from .core.printers import PrinterProfile, get_printer, load_printers, save_profile
@@ -173,6 +174,34 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Skriv lösa kroppar i samma del i en och samma fil i stället för "
         "en fil per kropp.",
+    )
+    cut.add_argument(
+        "--load-kg",
+        type=float,
+        default=None,
+        metavar="KG",
+        help="Vikten delen ska bära. Snitten undviker då lägena där böjmomentet "
+        "är störst, och utskriftsinställningar för hållfasthet skrivs ut.",
+    )
+    cut.add_argument(
+        "--support",
+        choices=["auto", "cantilever", "both_ends", "free"],
+        default="auto",
+        help="Hur delen bärs upp. auto (standard) gissar ur formen och skriver ut "
+        "gissningen - kontrollera den, fel upphängning vänder momentkurvan helt.",
+    )
+    cut.add_argument(
+        "--load-axis",
+        choices=["x", "y", "z"],
+        default=None,
+        help="Axeln lasten spänner över. Standard: gissas ur formen.",
+    )
+    cut.add_argument(
+        "--load-end",
+        choices=["low", "high"],
+        default=None,
+        help="Vilken ände som sitter mot väggen vid --support cantilever. "
+        "Standard: gissas ur formen.",
     )
     cut.add_argument(
         "--no-analysis",
@@ -408,6 +437,34 @@ def _resize_linked(args, parts, targets, selection, span_index) -> int:
     return 0
 
 
+def _load_case(args: argparse.Namespace, mesh) -> load_core.LoadCase | None:
+    """Lastfallet ur flaggorna, med gissning där användaren inte sagt något.
+
+    Gissningen skrivs alltid ut med sitt skäl. Fel upphängning vänder
+    momentkurvan helt, så den får inte gå igenom osedd.
+    """
+    if args.load_kg is None or args.load_kg <= 0 or args.support == "free":
+        return None
+
+    case = load_core.guess_load_case(mesh, float(args.load_kg))
+    if args.support != "auto":
+        case = replace(case, support=args.support, guessed_from="")
+    if args.load_axis is not None:
+        case = replace(case, axis=AXIS_FROM_LETTER[args.load_axis], guessed_from="")
+    if args.load_end is not None:
+        case = replace(case, fixed_at_low=args.load_end == "low", guessed_from="")
+
+    print("\nBelastning:")
+    print(f"  {load_core.describe_load_case(case)}")
+    if case.guessed_from:
+        print(f"  Gissat: {case.guessed_from}")
+        print(
+            "  Stämmer det inte: --support, --load-axis och --load-end "
+            "överstyr gissningen."
+        )
+    return case
+
+
 def _cmd_export(args: argparse.Namespace) -> int:
     """Skriv modellen utan att kapa den.
 
@@ -497,15 +554,21 @@ def _cmd_cut(args: argparse.Namespace) -> int:
         _print_resize(resized)
         resize_core.write_resize_report(resized, args.out, source=args.model)
 
+    case = _load_case(args, mesh)
     plan = plan_splits(
         mesh,
         printer,
         auto_orient=not args.no_orient,
         analyse=not args.no_analysis,
         assembly_intent=args.assembly,
+        load=case,
     )
     print()
     print(plan.describe())
+
+    if case is not None and case.active:
+        print()
+        print(load_core.describe_advice(case))
 
     if args.explain:
         print()

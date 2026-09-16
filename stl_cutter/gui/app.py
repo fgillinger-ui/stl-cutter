@@ -8,6 +8,7 @@ bakgrundstråd så att fönstret aldrig fryser.
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from functools import partial
 from pathlib import Path
 
@@ -42,7 +43,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..core import assembly as assembly_core
-from ..core import exporter, mesh_io, resize as resize_core
+from ..core import exporter, load as load_core, mesh_io, resize as resize_core
 from ..core.cutter import cut_mesh, parts_fit
 from ..core.planner import (
     AXIS_NAMES,
@@ -145,6 +146,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._section_resize())
         layout.addWidget(self._section_printer())
         layout.addWidget(self._section_assembly())
+        layout.addWidget(self._section_load())
         layout.addWidget(self._section_suggestions())
         layout.addWidget(self._section_export())
         layout.addStretch(1)
@@ -334,6 +336,73 @@ class MainWindow(QMainWindow):
         self.clearance = self._spin(0.0, 2.0, " mm", decimals=2, step=0.05)
         clearance_row.addWidget(self.clearance, 1)
         layout.addLayout(clearance_row)
+        return box
+
+    def _section_load(self) -> QGroupBox:
+        """Last att ta hänsyn till när snitten placeras.
+
+        Rutan är avstängd som standard. Slås den på gissar programmet
+        upphängningen ur formen och **visar gissningen med sitt skäl**, för
+        fel upphängning vänder momentkurvan helt - det är inget som får
+        avgöras i tysthet.
+        """
+        box = QGroupBox("3b. Belastning")
+        layout = QVBoxLayout(box)
+
+        self.load_check = QCheckBox("Delen ska bära last (hylla, konsol)")
+        self.load_check.setToolTip(
+            "Snitten läggs där böjmomentet är minst. Programmet räknar inte ut\n"
+            "hur mycket delen bär - bara var den är som känsligast för en fog."
+        )
+        self.load_check.stateChanged.connect(self._on_load_changed)
+        layout.addWidget(self.load_check)
+
+        weight_row = QHBoxLayout()
+        weight_row.addWidget(QLabel("Vikt att bära:"))
+        self.load_weight = self._spin(0.0, 500.0, " kg", decimals=1, step=0.5)
+        self.load_weight.setValue(5.0)
+        self.load_weight.valueChanged.connect(self._on_load_changed)
+        weight_row.addWidget(self.load_weight, 1)
+        layout.addLayout(weight_row)
+
+        support_row = QHBoxLayout()
+        support_row.addWidget(QLabel("Upphängning:"))
+        self.support_combo = QComboBox()
+        self.support_combo.addItem("Gissa ur formen", "auto")
+        for key in ("cantilever", "both_ends"):
+            self.support_combo.addItem(load_core.SUPPORT_LABELS[key], key)
+        self.support_combo.currentIndexChanged.connect(self._on_load_changed)
+        support_row.addWidget(self.support_combo, 1)
+        layout.addLayout(support_row)
+
+        axis_row = QHBoxLayout()
+        axis_row.addWidget(QLabel("Spännaxel:"))
+        self.load_axis_combo = QComboBox()
+        self.load_axis_combo.addItem("Gissa", -1)
+        for index, name in enumerate(AXIS_NAMES):
+            self.load_axis_combo.addItem(name, index)
+        self.load_axis_combo.currentIndexChanged.connect(self._on_load_changed)
+        axis_row.addWidget(self.load_axis_combo, 1)
+
+        axis_row.addWidget(QLabel("Infästning:"))
+        self.load_end_combo = QComboBox()
+        self.load_end_combo.addItem("Gissa", None)
+        self.load_end_combo.addItem("Vid axelns början", True)
+        self.load_end_combo.addItem("Vid axelns slut", False)
+        self.load_end_combo.currentIndexChanged.connect(self._on_load_changed)
+        axis_row.addWidget(self.load_end_combo, 1)
+        layout.addLayout(axis_row)
+
+        self.load_guess_label = QLabel("")
+        self.load_guess_label.setWordWrap(True)
+        self.load_guess_label.setStyleSheet("color: #555;")
+        layout.addWidget(self.load_guess_label)
+
+        self.advice_button = QPushButton("Utskriftsinställningar för styrka…")
+        self.advice_button.clicked.connect(self.show_print_advice)
+        layout.addWidget(self.advice_button)
+
+        self._on_load_changed()
         return box
 
     def _section_suggestions(self) -> QGroupBox:
@@ -775,6 +844,7 @@ class MainWindow(QMainWindow):
         self.scale_anyway.setVisible(False)
         self.scale_anyway.setChecked(False)
         self._update_size_fields()
+        self._on_load_changed()
         self.status(info.summary())
         for repair in info.repairs:
             self.status(f"Reparation: {repair}")
@@ -1197,10 +1267,79 @@ class MainWindow(QMainWindow):
         self.view.show_model(self.mesh_info.mesh)
         self.on_bed_toggled()
         self._update_size_fields()
+        # Gissningen om upphängning läses ur modellens form och gäller bara
+        # den modell den gjordes för.
+        self._on_load_changed()
 
     # ------------------------------------------------------------------
     # 4. Analys och förslag
     # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # Belastning
+    # ------------------------------------------------------------------
+
+    def current_load(self):
+        """Lastfallet ur rutan 3b, eller None när ingen last angetts.
+
+        Det som användaren själv valt vinner alltid över gissningen, och det
+        som står kvar på "Gissa" hämtas ur modellens form.
+        """
+        if self.mesh_info is None or not self.load_check.isChecked():
+            return None
+        weight = float(self.load_weight.value())
+        if weight <= 0:
+            return None
+
+        case = load_core.guess_load_case(self.mesh_info.mesh, weight)
+        support = self.support_combo.currentData()
+        if support != "auto":
+            case = replace(case, support=support, guessed_from="")
+        axis = self.load_axis_combo.currentData()
+        if axis is not None and axis >= 0:
+            case = replace(case, axis=int(axis), guessed_from="")
+        end = self.load_end_combo.currentData()
+        if end is not None:
+            case = replace(case, fixed_at_low=bool(end), guessed_from="")
+        return case
+
+    def _on_load_changed(self, *_args) -> None:
+        """Slå av och på rutan, och visa gissningen så fort den går att göra."""
+        active = self.load_check.isChecked()
+        for widget in (
+            self.load_weight,
+            self.support_combo,
+            self.load_axis_combo,
+            self.load_end_combo,
+            self.advice_button,
+        ):
+            widget.setEnabled(active)
+
+        if not active:
+            self.load_guess_label.setText("")
+            return
+        if self.mesh_info is None:
+            self.load_guess_label.setText("Läs in en modell för att se gissningen.")
+            return
+
+        case = self.current_load()
+        if case is None:
+            self.load_guess_label.setText("")
+            return
+        text = load_core.describe_load_case(case)
+        if case.guessed_from:
+            text += f"<br><i>Gissat: {case.guessed_from} Rätta det här ovanför om det är fel.</i>"
+        self.load_guess_label.setText(text)
+
+    def show_print_advice(self) -> None:
+        case = self.current_load()
+        if case is None or not case.active:
+            return
+        box = QMessageBox(self)
+        box.setWindowTitle("Utskriftsinställningar för styrka")
+        box.setTextFormat(Qt.PlainText)
+        box.setText(load_core.describe_advice(case))
+        box.exec()
 
     def start_analysis(self) -> None:
         if self.mesh_info is None:
@@ -1209,6 +1348,7 @@ class MainWindow(QMainWindow):
         intent = self.current_intent()
         mesh = self.mesh_info.mesh
         auto_orient = self.settings.auto_orient
+        case = self.current_load()
 
         def work(progress=None):
             return plan_splits(
@@ -1218,6 +1358,7 @@ class MainWindow(QMainWindow):
                 analyse=True,
                 assembly_intent=intent,
                 progress=progress,
+                load=case,
             )
 
         self._start(work, self._on_plan_ready, "Analyserar snittlägen…")

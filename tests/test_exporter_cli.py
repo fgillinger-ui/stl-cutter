@@ -445,3 +445,45 @@ def test_touching_bodies_in_a_part_are_not_split(tmp_path, printer):
     )
 
     assert [p.name for p in out.part_files] == ["part_01.stl"]
+
+
+def test_the_cli_takes_a_load_and_moves_the_cut(tmp_path, big_box, capsys):
+    """Med en vikt angiven ska snittet flytta sig, och gissningen om
+    upphängning ska stå i utskriften så att den går att rätta."""
+    from stl_cutter.core import mesh_io
+
+    model = tmp_path / "hylla.stl"
+    mesh_io.save_stl(big_box, model)
+
+    assert main(["cut", str(model), "--printer", "Bambu P1S", "--out", str(tmp_path / "a"),
+                 "--dry-run", "--no-orient"]) == 0
+    plain = capsys.readouterr().out
+
+    assert main(["cut", str(model), "--printer", "Bambu P1S", "--out", str(tmp_path / "b"),
+                 "--dry-run", "--no-orient", "--load-kg", "5",
+                 "--support", "cantilever", "--load-axis", "x",
+                 "--load-end", "low"]) == 0
+    loaded = capsys.readouterr().out
+
+    def position(text: str) -> float:
+        line = next(rad for rad in text.splitlines() if "Snitt 1:" in rad)
+        return float(line.split("=")[1].split("mm")[0])
+
+    assert position(loaded) > position(plain) + 10.0
+    assert "Belastning:" in loaded
+    assert "Utskriftsinställningar" in loaded
+    assert "tumregler" in loaded
+
+
+def test_the_cli_says_when_the_support_is_only_a_guess(tmp_path, big_box, capsys):
+    from stl_cutter.core import mesh_io
+
+    model = tmp_path / "hylla.stl"
+    mesh_io.save_stl(big_box, model)
+
+    assert main(["cut", str(model), "--printer", "Bambu P1S", "--out", str(tmp_path / "ut"),
+                 "--dry-run", "--load-kg", "5"]) == 0
+
+    out = capsys.readouterr().out
+    assert "Gissat:" in out
+    assert "--support" in out, "gissningen måste gå att rätta, och det ska stå hur"

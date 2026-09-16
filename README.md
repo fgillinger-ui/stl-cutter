@@ -87,6 +87,11 @@ och en 3D-vy till höger.
 3. **Montering** — ska delarna limmas ihop för gott, eller kunna tas isär igen?
    Valet styr vilka fogtyper som föreslås. Toleransen är spelet i fogen; större
    värde ger lösare passning.
+3b. **Belastning** — ska delen bära något? Kryssa i rutan och ange vikten.
+   Programmet gissar upphängningen ur formen, visar gissningen med sitt skäl
+   så att du kan rätta den, och lägger sedan snitten där böjmomentet är minst.
+   Knappen *Utskriftsinställningar för styrka…* ger inställningarna för
+   slicern. Se [Delar som ska bära något](#delar-som-ska-bära-något).
 4. **Förslag** — klicka *Analysera*. Du får en tabell med ett snitt per rad:
    var det ligger, vilken fogtyp programmet föreslår och varför. Markera en rad
    för att läsa hela motiveringen och se de näst bästa alternativen.
@@ -207,6 +212,37 @@ en fil per klump, så att varje utskrift går att vända och placera för sig. B
 går att stänga av: kryssrutorna i rutan *5. Kapa och exportera*, eller
 `--no-lay-flat` och `--no-split-bodies` på kommandoraden.
 
+### Delar som ska bära något
+
+Ska delen bära last — en hylla, en konsol — spelar det stor roll *var* snittet
+hamnar. En fog är alltid svagare än helt gods, och den ska inte hamna där
+böjningen är värst. Kryssa i **Delen ska bära last** i rutan *3b. Belastning*,
+ange vikten, och snitten flyttar sig dit modellen är minst belastad:
+
+```bash
+stl-cutter cut hylla.stl --printer "Bambu P1S" --out ./ut --load-kg 5
+```
+
+Programmet gissar upphängningen ur formen (längsta vågräta axeln är
+spännaxeln; den ände som har mest material i tvärsnittet tas för infästningen)
+och **skriver ut gissningen med sitt skäl**. Stämmer den inte rättar du den med
+`--support cantilever|both_ends`, `--load-axis x|y|z` och `--load-end low|high`,
+eller med rullgardinerna i gränssnittet. Fel upphängning vänder momentkurvan
+helt, så den gissningen får aldrig gå igenom osedd.
+
+Med en last angiven skrivs också utskriftsinställningar för hållfasthet ut —
+väggar, fyllnad, lagerhöjd, temperatur och fläkt, var och en med skälet till
+sig. I gränssnittet ligger de bakom knappen **Utskriftsinställningar för
+styrka…**.
+
+> **Vad programmet inte gör:** det räknar *inte* ut hur mycket hyllan bär.
+> Det kräver en strukturmodell av en godtycklig mesh, och FDM varierar
+> dessutom ±50 % med skrivare, material och kylning. Ett tal som ser ut att
+> vara beräknat men inte är det är farligare än inget tal alls — det är det
+> man hänger upp sin NAS på. Det programmet gör är att *rangordna* snittlägen,
+> och den rangordningen beror bara på upphängning och spännvidd. Ska lasten
+> vara stor: provbelasta, med marginal.
+
 Behöver modellen inte delas — den får plats som den är, eller ska tillbaka in
 i CAD — skriver `export` ut den utan att kapa:
 
@@ -280,8 +316,9 @@ stl-cutter printers --add "Min skrivare" --bed 300 300 400 --margin 8
 4. Runt varje snittläge provas alternativa positioner (±15 % av modellens längd,
    i steg om 2 mm). Varje kandidat mäts — snittarea, antal öar, minsta
    väggtjocklek, rundhet — och poängsätts. Snitt genom tunna väggar, genom många
-   separata öar eller som lämnar en nästan tom del undviks. Antalet delar ökar
-   aldrig av den här optimeringen.
+   separata öar eller som lämnar en nästan tom del undviks. Har du angett en
+   last straffas dessutom lägen där böjmomentet är stort, och sökningen får
+   leta i ±30 % i stället. Antalet delar ökar aldrig av den här optimeringen.
 5. Varje valt snitt får en rekommenderad fogtyp med motivering och de två näst
    bästa alternativen, som hamnar i `split_report.json`.
 6. Snitten utförs med lock på snittytan, och volymen jämförs mot originalet
@@ -295,6 +332,7 @@ stl-cutter printers --add "Min skrivare" --bed 300 300 400 --margin 8
 
 * [docs/JOINTS.md](docs/JOINTS.md) — fogtyperna, när de passar och hur du monterar dem
 * [docs/RESIZE.md](docs/RESIZE.md) — ändra mått utan att deformera godset, och vad som inte fungerar
+* [docs/LOAD.md](docs/LOAD.md) — delar som ska bära last, och varför programmet inte räknar ut bärighet
 * [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — hur programmet är byggt
 
 ## Fogtyper som kan föreslås
