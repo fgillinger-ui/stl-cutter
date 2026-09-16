@@ -254,6 +254,11 @@ Flera objekt i filen blir en fil var (`modell_01.stl`, `modell_02.stl`);
 `--merge` lägger allt i samma fil. I gränssnittet heter det **Exportera utan
 att dela** i rutan *1b. Ändra mått*, och finns även under **Arkiv**.
 
+Också den exporten **lägger objekten platt**, precis som delarna efter en
+kapning — en hyllplatta som står upp i CAD-filen skrivs annars på högkant med
+stöd överallt. Ska filen tillbaka in i CAD vill man ha den orörd: kryssa ur
+*Vänd delarna platt* eller kör `--no-lay-flat`.
+
 Ändra måttet och kapa i ett svep:
 
 ```bash
@@ -311,7 +316,11 @@ stl-cutter printers --add "Min skrivare" --bed 300 300 400 --margin 8
 1. Modellen läses in, dubblerade vertices slås ihop, hål fylls om möjligt och
    det rapporteras om meshen är hel (watertight).
 2. Modellen roteras till den orientering som ger minst antal delar (rotationer
-   i 15°-steg runt X/Y/Z samt en PCA-baserad orientering).
+   i 15°-steg runt X/Y/Z samt en PCA-baserad orientering). Lägen där modellen
+   bara balanserar på en smal kant räknas inte: anliggningen mot plattan måste
+   vara minst en fjärdedel av den största modellen kan få. En platta som bara
+   "får plats" genom att ställas på högkant kapas hellre och skrivs liggande,
+   och då står det i planen att valet fanns.
 3. Antal delar per axel räknas ut som `ceil(storlek / (byggmått − 2·marginal))`.
 4. Runt varje snittläge provas alternativa positioner (±15 % av modellens längd,
    i steg om 2 mm). Varje kandidat mäts — snittarea, antal öar, minsta

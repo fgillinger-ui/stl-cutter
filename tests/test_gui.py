@@ -2004,8 +2004,10 @@ def test_a_resized_model_is_what_gets_exported(qapp, window, tmp_path, monkeypat
 
     import trimesh
 
+    # Exporten lägger objekten platt, så det ändrade måttet kan ha bytt axel.
+    # Det som ska stämma är måttet självt: 230 -> 270 och 250 -> 290.
     widths = sorted(
-        round(float(trimesh.load(p).extents[0]))
+        round(float(max(trimesh.load(p).extents)))
         for p in (tmp_path / "ut").glob("*.stl")
     )
     assert widths == [270, 290]
@@ -2126,3 +2128,28 @@ def test_no_load_leaves_the_plan_as_it_was(qapp, window, model_file):
 
     assert window.plan.load is None
     assert "load" not in (window.plan.cuts[0].score.penalties or {})
+
+
+def test_the_gui_export_lays_the_model_flat(qapp, window, tmp_path, monkeypatch):
+    """Samma sak från gränssnittet: knappen Exportera utan att dela ska ge en
+    fil som slicern kan lägga på plattan."""
+    import trimesh
+
+    from PySide6.QtWidgets import QFileDialog
+
+    from stl_cutter.core import mesh_io
+
+    model = tmp_path / "platta.stl"
+    mesh_io.save_stl(trimesh.creation.box(extents=(270.0, 10.0, 180.0)), model)
+    window.load_model(model)
+    wait_for_worker(qapp, window)
+
+    target = tmp_path / "ut" / "platta_ändrad.stl"
+    monkeypatch.setattr(
+        QFileDialog, "getSaveFileName", staticmethod(lambda *a, **k: (str(target), ""))
+    )
+    window.export_model()
+    wait_for_worker(qapp, window)
+
+    assert window.lay_flat_check.isChecked()
+    assert trimesh.load(target).extents[2] == pytest.approx(10.0, abs=0.01)

@@ -256,6 +256,13 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Skriv alla objekt i en enda fil i stället för en fil per objekt.",
     )
+    export_cmd.add_argument(
+        "--no-lay-flat",
+        action="store_true",
+        help="Skriv modellen i sitt eget läge i stället för liggande. Vänd "
+        "platt är standard - en platta som står upp i CAD-filen skrivs annars "
+        "på högkant med stöd överallt.",
+    )
 
     spans_cmd = sub.add_parser(
         "analyze-spans",
@@ -488,7 +495,9 @@ def _cmd_export(args: argparse.Namespace) -> int:
                 print(f"  {index}. {part.summary()}")
             meshes = [part.mesh for part in parts]
 
-    written = exporter.export_model(meshes, out, file_format=args.format)
+    written = exporter.export_model(
+        meshes, out, file_format=args.format, lay_flat=not args.no_lay_flat
+    )
     print("\nSkrev:")
     for path in written:
         x, y, z = mesh_io.load_mesh(path, repair=False).extents_mm

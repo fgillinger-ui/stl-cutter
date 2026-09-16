@@ -487,3 +487,49 @@ def test_the_cli_says_when_the_support_is_only_a_guess(tmp_path, big_box, capsys
     out = capsys.readouterr().out
     assert "Gissat:" in out
     assert "--support" in out, "gissningen måste gå att rätta, och det ska stå hur"
+
+
+def test_export_without_cutting_lays_the_model_flat(tmp_path):
+    """En platta som står upp i CAD-filen ska inte komma ut stående.
+
+    Verkligt fall: hyllplattan 270 x 10 x 180 mm exporterades i modellens eget
+    läge, och slicern fick den på högkant - stöd överallt och lagren tvärs den
+    riktning lasten böjer den.
+    """
+    import trimesh
+
+    plate = trimesh.creation.box(extents=(270.0, 10.0, 180.0))
+
+    written = exporter.export_model(plate, tmp_path / "platta.stl")
+
+    back = trimesh.load(written[0])
+    assert back.extents[2] == pytest.approx(10.0, abs=0.01), "plattan står fortfarande upp"
+    assert sorted(round(float(v)) for v in back.extents) == [10, 180, 270]
+    assert back.volume == pytest.approx(plate.volume, rel=1e-4)
+
+
+def test_export_can_keep_the_models_own_orientation(tmp_path):
+    """Ska filen tillbaka in i CAD vill man ha den orörd."""
+    import trimesh
+
+    plate = trimesh.creation.box(extents=(270.0, 10.0, 180.0))
+
+    written = exporter.export_model(plate, tmp_path / "platta.stl", lay_flat=False)
+
+    assert trimesh.load(written[0]).extents[2] == pytest.approx(180.0, abs=0.01)
+
+
+def test_the_cli_export_lays_flat_unless_told_otherwise(tmp_path, capsys):
+    import trimesh
+
+    from stl_cutter.core import mesh_io
+
+    model = tmp_path / "platta.stl"
+    mesh_io.save_stl(trimesh.creation.box(extents=(270.0, 10.0, 180.0)), model)
+
+    assert main(["export", str(model), "--out", str(tmp_path / "ut" / "a.stl")]) == 0
+    assert trimesh.load(tmp_path / "ut" / "a.stl").extents[2] == pytest.approx(10.0, abs=0.01)
+
+    assert main(["export", str(model), "--out", str(tmp_path / "ut" / "b.stl"),
+                 "--no-lay-flat"]) == 0
+    assert trimesh.load(tmp_path / "ut" / "b.stl").extents[2] == pytest.approx(180.0, abs=0.01)

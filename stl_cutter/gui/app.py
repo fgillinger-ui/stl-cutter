@@ -536,7 +536,8 @@ class MainWindow(QMainWindow):
         self.lay_flat_check.setToolTip(
             "Varje del vrids till sitt plattaste läge. Det tar bort stödbehovet\n"
             "och lägger utskriftens lager längs delen i stället för tvärs, vilket\n"
-            "gör den flera gånger starkare i böjning."
+            "gör den flera gånger starkare i böjning.\n"
+            "Gäller även Exportera utan att dela."
         )
         layout.addWidget(self.lay_flat_check)
 
@@ -1981,10 +1982,14 @@ class MainWindow(QMainWindow):
             else [self.mesh_info.mesh]
         )
 
+        # Samma vändning som delarna får efter en kapning: en platta som står
+        # upp i CAD-filen ska inte komma ut stående till slicern.
+        flat = self.lay_flat_check.isChecked()
+
         def work(progress=None):
             if progress is not None:
                 progress(0.3, "Skriver filer")
-            return exporter.export_model(meshes, target)
+            return exporter.export_model(meshes, target, lay_flat=flat)
 
         self._start(work, self._on_model_exported, "Exporterar modellen…")
 
