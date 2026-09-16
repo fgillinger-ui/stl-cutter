@@ -33,6 +33,8 @@ class Settings:
     #: Processprofilen i slicern som de skrivna profilerna ärver från. Bara
     #: användaren vet vad den heter, så den kommer ihåg mellan körningar.
     base_profile: str = ""
+    #: Mappen projekten senast sparades i eller öppnades från.
+    last_project_dir: str = ""
 
     @classmethod
     def load(cls, path: Path | None = None) -> "Settings":

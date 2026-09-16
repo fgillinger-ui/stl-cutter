@@ -44,6 +44,7 @@ from PySide6.QtWidgets import (
 
 from ..core import assembly as assembly_core
 from ..core import exporter, load as load_core, mesh_io, profile as profile_core
+from ..core import project as project_core
 from ..core import resize as resize_core
 from ..core.cutter import cut_mesh, parts_fit
 from ..core.planner import (
@@ -644,6 +645,25 @@ class MainWindow(QMainWindow):
 
         menu.addSeparator()
 
+        open_project_action = QAction("Öppna &projekt…", self)
+        open_project_action.setToolTip(
+            "Ta upp ett sparat arbete: modellen, snitten, fogvalen och "
+            "inställningarna precis som de var."
+        )
+        open_project_action.triggered.connect(self.open_project)
+        menu.addAction(open_project_action)
+
+        self.save_project_action = QAction("&Spara projekt…", self)
+        self.save_project_action.setToolTip(
+            "Spara modellen och allt du ställt in i en fil, så att arbetet "
+            "går att fortsätta en annan dag."
+        )
+        self.save_project_action.triggered.connect(self.save_project)
+        self.save_project_action.setEnabled(False)
+        menu.addAction(self.save_project_action)
+
+        menu.addSeparator()
+
         log_action = QAction("Visa &loggfilens plats", self)
         log_action.triggered.connect(
             lambda: self.status(f"Full logg skrivs till {log_file()}")
@@ -843,6 +863,7 @@ class MainWindow(QMainWindow):
         self.cut_button.setEnabled(False)
         self.preview_button.setEnabled(False)
         self.analyse_button.setEnabled(True)
+        self.save_project_action.setEnabled(True)
         self.add_cut_button.setEnabled(True)
         self.remove_cut_button.setEnabled(True)
         self.straighten_button.setEnabled(True)
@@ -1353,6 +1374,229 @@ class MainWindow(QMainWindow):
         box.setTextFormat(Qt.PlainText)
         box.setText(load_core.describe_advice(case))
         box.exec()
+
+    # ------------------------------------------------------------------
+    # Projekt
+    # ------------------------------------------------------------------
+
+    def current_project(self):
+        """Allt som behövs för att ta upp arbetet igen.
+
+        Modellen tas som den är *nu*, alltså efter en eventuell måttändring -
+        det är den som snitten är lagda i.
+        """
+        cuts = []
+        if self.plan is not None:
+            for cut in self.plan.cuts:
+                joint = cut.recommendation.joint_type if cut.recommendation else ""
+                params = dict(cut.recommendation.params or {}) if cut.recommendation else {}
+                cuts.append(
+                    project_core.ProjectCut(
+                        axis=cut.plane.axis,
+                        position_mm=cut.plane.position,
+                        # Bara ett vinklat snitt behöver sin normal sparad;
+                        # ett rakt återskapas av axeln.
+                        normal=(
+                            tuple(cut.plane.normal)
+                            if not cut.plane.is_axis_aligned
+                            else (0.0, 0.0, 0.0)
+                        ),
+                        joint_type=joint,
+                        params=params,
+                    )
+                )
+
+        return project_core.Project(
+            mesh=self.mesh_info.mesh,
+            printer=self.current_printer(),
+            source=str(self.mesh_info.path),
+            assembly_intent=self.current_intent(),
+            load=self.current_load(),
+            cuts=cuts,
+            lay_flat=self.lay_flat_check.isChecked(),
+            split_bodies=self.split_bodies_check.isChecked(),
+            output_dir=self.settings.last_output_dir,
+            base_profile=self.settings.base_profile,
+        )
+
+    def save_project(self) -> None:
+        if self.mesh_info is None:
+            self.status("Öppna en modell först.", error=True)
+            return
+
+        suggested = Path(self.settings.last_project_dir or self.mesh_info.path.parent) / (
+            f"{self.mesh_info.path.stem}{project_core.PROJECT_SUFFIX}"
+        )
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Spara projektet",
+            str(suggested),
+            f"STL Cutter-projekt (*{project_core.PROJECT_SUFFIX})",
+        )
+        if not path:
+            return
+
+        project = self.current_project()
+        try:
+            written = project_core.save_project(project, Path(path))
+        except OSError as error:
+            self.status(f"Kunde inte spara projektet: {error}", error=True)
+            return
+
+        self.settings.last_project_dir = str(written.parent)
+        size = written.stat().st_size / (1024 * 1024)
+        self.status(
+            f"Sparade projektet till {written} ({size:.1f} MB). Modellen ligger "
+            "med i filen, så den går att öppna även om originalet flyttas."
+        )
+
+    def open_project(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Öppna ett projekt",
+            self.settings.last_project_dir or self.settings.last_open_dir or "",
+            f"STL Cutter-projekt (*{project_core.PROJECT_SUFFIX})",
+        )
+        if not path:
+            return
+        self.load_project(Path(path))
+
+    def load_project(self, path: Path) -> None:
+        """Ta upp ett sparat arbete."""
+        try:
+            project = project_core.load_project(path)
+        except project_core.ProjectError as error:
+            self.status(str(error), error=True)
+            return
+
+        self.settings.last_project_dir = str(Path(path).parent)
+        self._apply_project(project, path)
+
+    def _apply_project(self, project, path: Path) -> None:
+        """Lägg tillbaka modellen, inställningarna och snitten."""
+        # Modellen först: allt annat hänger på den.
+        self.mesh_info = mesh_io.MeshInfo(
+            path=Path(project.source) if project.source else Path(path),
+            mesh=project.mesh,
+            watertight=bool(project.mesh.is_watertight),
+            winding_consistent=bool(project.mesh.is_winding_consistent),
+            volume_mm3=float(abs(project.mesh.volume)),
+            extents_mm=tuple(float(v) for v in project.mesh.extents),
+            repairs=[],
+            open_edges=mesh_io.open_edge_count(project.mesh),
+        )
+        self._rebuild_parts()
+        self.mesh_before_resize = None
+        self.spans = None
+        self.result = None
+        self.plan = None
+
+        # Skrivare och montering.
+        index = self.printer_combo.findText(project.printer.name)
+        if index >= 0:
+            self.printer_combo.setCurrentIndex(index)
+        self.bed_x.setValue(project.printer.bed_x)
+        self.bed_y.setValue(project.printer.bed_y)
+        self.bed_z.setValue(project.printer.bed_z)
+        self.margin.setValue(project.printer.margin_mm)
+        self.clearance.setValue(project.printer.clearance_mm)
+        self.demount_radio.setChecked(project.assembly_intent == "demountable")
+        self.glue_radio.setChecked(project.assembly_intent != "demountable")
+
+        # Belastning.
+        self.load_check.setChecked(project.load is not None and project.load.active)
+        if project.load is not None and project.load.active:
+            self.load_weight.setValue(project.load.mass_kg)
+            where = self.support_combo.findData(project.load.support)
+            self.support_combo.setCurrentIndex(max(where, 0))
+            self.load_axis_combo.setCurrentIndex(
+                max(self.load_axis_combo.findData(project.load.axis), 0)
+            )
+            self.load_end_combo.setCurrentIndex(
+                max(self.load_end_combo.findData(project.load.fixed_at_low), 0)
+            )
+
+        self.lay_flat_check.setChecked(project.lay_flat)
+        self.split_bodies_check.setChecked(project.split_bodies)
+        if project.output_dir:
+            self.settings.last_output_dir = project.output_dir
+            self.output_label.setText(project.output_dir)
+        if project.base_profile:
+            self.settings.base_profile = project.base_profile
+
+        for button in (
+            self.analyse_button,
+            self.add_cut_button,
+            self.remove_cut_button,
+            self.straighten_button,
+            self.reset_cuts_button,
+            self.resize_button,
+            self.show_spans_button,
+        ):
+            button.setEnabled(True)
+        self.undo_resize_button.setEnabled(False)
+        self.export_action.setEnabled(True)
+        self.export_button.setEnabled(True)
+        self.save_project_action.setEnabled(True)
+
+        self.view.show_model(project.mesh)
+        self.on_bed_toggled()
+        self._update_size_fields()
+        self._on_load_changed()
+        self.status(project.describe())
+
+        if project.cuts:
+            self._restore_cuts(project)
+        else:
+            self.cut_table.setRowCount(0)
+            self.cut_button.setEnabled(False)
+            self.preview_button.setEnabled(False)
+            self.status("Projektet har inga snitt sparade - klicka Analysera.")
+
+    def _restore_cuts(self, project) -> None:
+        """Bygg om planen av de sparade snitten, med fogvalen tillbaka.
+
+        Snitten analyseras om mot modellen. Analysen är en funktion av
+        geometrin och behöver därför inte sparas - men fogvalet är ett beslut
+        användaren fattat, och det läggs tillbaka efteråt.
+        """
+        printer = self.current_printer()
+        intent = self.current_intent()
+        mesh = self.mesh_info.mesh
+
+        cuts = []
+        for number, saved in enumerate(project.cuts, start=1):
+            info = make_cut(
+                mesh,
+                saved.axis,
+                saved.position_mm,
+                index=number,
+                printer=printer,
+                assembly_intent=intent,
+                normal=saved.normal if saved.has_normal else None,
+            )
+            if saved.joint_type and info.analysis is not None:
+                info.recommendation = build_recommendation(
+                    saved.joint_type,
+                    info.analysis,
+                    intent=intent,
+                    clearance_mm=self.clearance.value(),
+                )
+                if saved.params:
+                    info.recommendation.params = {
+                        **(info.recommendation.params or {}),
+                        **saved.params,
+                    }
+            cuts.append(info)
+
+        self.plan = plan_from_cuts(
+            mesh, printer, cuts, orientation_name="projekt", assembly_intent=intent
+        )
+        self.result = None
+        self.cut_button.setEnabled(bool(self.plan.cuts))
+        self.preview_button.setEnabled(bool(self.plan.cuts))
+        self._fill_table(self.plan)
+        self._refresh_planes()
 
     def save_slicer_profile(self) -> None:
         """Skriv inställningarna som en profil slicern kan importera.
