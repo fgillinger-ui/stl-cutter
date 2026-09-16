@@ -7,11 +7,29 @@ in för hand varje gång.
 **Formatet.** OrcaSlicer och de slicers som bygger på den - FlashPrint för
 Flashforge Creator 5, Bambu Studio, Qidi Studio - läser profiler som JSON där
 varje värde är en sträng och `inherits` pekar på en profil som redan finns.
-Nycklarna nedan är avlästa ur OrcaSlicers egna profiler, inte gissade:
-`wall_loops`, `sparse_infill_density`, `top_shell_layers`,
-`bottom_shell_layers`, `sparse_infill_pattern`, `layer_height` i processfilen,
-och `nozzle_temperature`, `fan_max_speed`, `fan_min_speed` i filamentfilen -
-där varje värde är en *lista* med en sträng, en per extruder.
+Nycklarna är avlästa ur OrcaSlicers egna profiler, inte gissade: `wall_loops`,
+`sparse_infill_density`, `top_shell_layers`, `bottom_shell_layers`,
+`sparse_infill_pattern`, `layer_height` i processfilen, och
+`nozzle_temperature`, `fan_max_speed`, `fan_min_speed` i filamentfilen - där
+varje värde är en *lista* med en sträng, en per extruder.
+
+**Vad som krävs för att importen ska lyckas.** Första versionen av den här
+modulen skrev en fil som såg riktig ut och som slicern förkastade med *"There
+are 0 configs imported"* - utan att säga varför. Två krav saknades, båda
+avlästa ur `PresetBundle::import_json_presets` i OrcaSlicers källkod:
+
+* ``version`` måste finnas och gå att tolka som ett versionsnummer. Saknas det
+  avbryts inläsningen på rad tre, före allt annat: ``if (!version) return
+  false;``
+* Profiltypen avgörs **inte** av fältet ``type`` utan av vilket id-fält som
+  finns: ``print_settings_id`` gör den till en processprofil,
+  ``filament_settings_id`` till en filamentprofil. Utan något av dem blir det
+  *"Preset type is unknown, not loading"*.
+
+Filen skrivs därför exakt som slicern själv skriver sina användarprofiler:
+``version``, ``name``, ``from``, ``inherits``, id-fältet och inställningarna.
+``type`` och ``instantiation`` hör till leverantörsprofiler och tas bort igen
+av slicern, så de skrivs inte.
 
 **Varför `inherits` är obligatoriskt.** En processprofil har hundratals
 inställningar: hastigheter, accelerationer, stöd, primtorn. Vi kan bara de sju
@@ -47,6 +65,11 @@ __all__ = [
     "write_profiles",
 ]
 
+#: Versionsnumret i profilen. Tre siffror är giltigt både för den strikta
+#: semver-tolken och den utökade som slicern använder. Värdet jämförs inte mot
+#: något - det måste bara gå att tolka, annars förkastas hela filen.
+PROFILE_VERSION = "1.0.0"
+
 #: Hur mycket temperaturen höjs för bättre lagerhäftning, i °C. Mitten av
 #: intervallet 5-10 som `core.load` rekommenderar.
 TEMPERATURE_BOOST_C = 8
@@ -71,7 +94,13 @@ class ProfileBundle:
 
 
 def _safe_name(name: str) -> str:
-    """Ett filnamn som överlever alla filsystem men går att känna igen."""
+    """Ett namn som duger både som filnamn och som profilnamn.
+
+    Slicern använder profilnamnet som filnamn när den sparar, och vägrar ett
+    namn som innehåller sökvägstecken (`is_path_within_root` i
+    `import_json_presets`). Därför städas namnet innan det skrivs, inte bara
+    filnamnet.
+    """
     cleaned = re.sub(r"[^\w\s.+-]", "_", name, flags=re.UNICODE).strip()
     return re.sub(r"\s+", " ", cleaned) or "profil"
 
@@ -107,12 +136,15 @@ def process_profile(
         )
 
     walls = 5 if load.mass_kg >= 3.0 else 4
+    safe = _safe_name(name)
     return {
-        "type": "process",
-        "name": name,
-        "inherits": base_profile.strip(),
+        # Ordningen är den slicern själv skriver: rubrikerna först.
+        "version": PROFILE_VERSION,
+        "name": safe,
         "from": "User",
-        "instantiation": "true",
+        "inherits": base_profile.strip(),
+        # Det här fältet, inte "type", gör den till en processprofil.
+        "print_settings_id": safe,
         # Väggarna bär böjningen - de ligger längst från neutrallagret.
         "wall_loops": str(walls),
         # Yttersta materialet bär, och delen ligger platt.
@@ -149,12 +181,14 @@ def filament_profile(
         raise ProfileError("Ange filamentets normala temperatur i °C.")
 
     hot = str(int(round(normal_temp_c + TEMPERATURE_BOOST_C)))
+    safe = _safe_name(name)
     return {
-        "type": "filament",
-        "name": name,
-        "inherits": base_profile.strip(),
+        "version": PROFILE_VERSION,
+        "name": safe,
         "from": "User",
-        "instantiation": "true",
+        "inherits": base_profile.strip(),
+        # Motsvarigheten för filament - och en lista, som alla filamentvärden.
+        "filament_settings_id": [safe],
         # Lagerhäftningen är den svaga riktningen och blir bättre av varmare
         # plast. Första lagret får samma värde - det ska sitta.
         "nozzle_temperature": [hot],
