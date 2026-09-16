@@ -464,7 +464,15 @@ def describe_assembly(result: AssemblyResize) -> str:
     axis_word = {0: "bredden", 1: "djupet", 2: "höjden"}[result.axis]
     lines = [f"Ändrade {axis_word} med {result.delta_mm:+.1f} mm:"]
     for entry in result.entries:
-        role = "ledare" if entry.is_leader else "följer med"
+        # Ett objekt som kryssats ur står stilla. Att kalla det "följer med"
+        # är tvärtom mot vad som hände och får raden att se ut som att
+        # passningen är omhändertagen när den inte är det.
+        if entry.is_leader:
+            role = "ledare"
+        elif abs(entry.delta_mm) < 1e-9:
+            role = "orörd"
+        else:
+            role = "följer med"
         line = f"  {entry.name}: {entry.from_mm:.1f} → {entry.to_mm:.1f} mm ({role})"
         if entry.spacing_before is not None and entry.spacing_after is not None:
             line += (

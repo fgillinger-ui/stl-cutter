@@ -259,6 +259,26 @@ def test_a_missing_cross_check_is_said_out_loud():
     assert "kunde inte kontrolleras" in result.notes[0]
 
 
+def test_an_excluded_object_is_not_called_a_follower():
+    """Ett urkryssat objekt står stilla och ska inte stå som "följer med".
+
+    Raden läses som ett kvitto på att passningen är omhändertagen. Sa den
+    "följer med" om en del som inte rörde sig var det tvärtom mot vad som
+    hände.
+    """
+    parts = assembly.split_parts(two_objects())
+    leader = next(i for i, p in enumerate(parts) if round(float(p.extents_mm[0])) == 230)
+    follow = [False] * len(parts)
+
+    result = assembly.resize_together(
+        parts, axis=0, target_mm=270.0, leader=leader, follow=follow
+    )
+    text = assembly.describe_assembly(result)
+
+    assert "orörd" in text
+    assert "följer med" not in text
+
+
 def test_a_bad_axis_is_refused():
     parts = assembly.split_parts(two_objects())
 
