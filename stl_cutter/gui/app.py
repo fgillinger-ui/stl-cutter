@@ -263,6 +263,14 @@ class MainWindow(QMainWindow):
         self.resize_button.clicked.connect(self.start_resize)
         self.resize_button.setEnabled(False)
         button_row.addWidget(self.resize_button, 1)
+        self.export_button = QPushButton("Exportera utan att dela")
+        self.export_button.setToolTip(
+            "Skriv modellen som den är just nu, utan att kapa den.\n"
+            "Flera objekt i filen blir en fil var."
+        )
+        self.export_button.clicked.connect(self.export_model)
+        self.export_button.setEnabled(False)
+        button_row.addWidget(self.export_button)
         self.undo_resize_button = QPushButton("Ångra")
         self.undo_resize_button.setToolTip("Återställ modellen som den var.")
         self.undo_resize_button.clicked.connect(self.undo_resize)
@@ -526,6 +534,17 @@ class MainWindow(QMainWindow):
         open_action.triggered.connect(self.choose_model)
         menu.addAction(open_action)
 
+        self.export_action = QAction("&Exportera modellen (utan att dela)…", self)
+        self.export_action.setToolTip(
+            "Skriv modellen som den är just nu - efter en måttändring, men utan "
+            "att kapa den."
+        )
+        self.export_action.triggered.connect(self.export_model)
+        self.export_action.setEnabled(False)
+        menu.addAction(self.export_action)
+
+        menu.addSeparator()
+
         log_action = QAction("Visa &loggfilens plats", self)
         log_action.triggered.connect(
             lambda: self.status(f"Full logg skrivs till {log_file()}")
@@ -642,6 +661,8 @@ class MainWindow(QMainWindow):
             self.resize_button,
             self.show_spans_button,
             self.undo_resize_button,
+            self.export_button,
+            self.export_action,
         ):
             widget.setEnabled(not busy and self._enabled_when_idle(widget))
 
@@ -651,6 +672,8 @@ class MainWindow(QMainWindow):
         if widget is self.cut_button:
             return self.plan is not None
         if widget in (self.resize_button, self.show_spans_button):
+            return self.mesh_info is not None
+        if widget in (self.export_button, self.export_action):
             return self.mesh_info is not None
         if widget is self.undo_resize_button:
             return self.mesh_before_resize is not None
@@ -1765,6 +1788,55 @@ class MainWindow(QMainWindow):
         else:
             self.plan_summary.setStyleSheet("color: #363;")
         self.plan_summary.setText(text)
+
+    def export_model(self) -> None:
+        """Skriv modellen som den är just nu, utan att kapa den.
+
+        Efter en måttändring är det ofta hela ärendet: modellen får plats som
+        den är, eller ska tillbaka in i CAD. Att behöva gå via en kapning för
+        att få ut filen vore omvägen.
+        """
+        if self.mesh_info is None:
+            self.status("Öppna en modell först.", error=True)
+            return
+
+        source = self.mesh_info.path
+        suggested = Path(self.settings.last_output_dir or source.parent) / (
+            f"{source.stem}_ändrad.stl"
+        )
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Exportera modellen utan att dela den",
+            str(suggested),
+            "STL (*.stl);;3MF (*.3mf)",
+        )
+        if not path:
+            return
+
+        target = Path(path)
+        self.settings.last_output_dir = str(target.parent)
+        # Flera objekt skrivs var för sig - en fil per utskrift.
+        meshes = (
+            [part.mesh for part in self.parts]
+            if len(self.parts) > 1
+            else [self.mesh_info.mesh]
+        )
+
+        def work(progress=None):
+            if progress is not None:
+                progress(0.3, "Skriver filer")
+            return exporter.export_model(meshes, target)
+
+        self._start(work, self._on_model_exported, "Exporterar modellen…")
+
+    def _on_model_exported(self, written) -> None:
+        for path in written:
+            self.status(f"Skrev {path}")
+        if len(written) > 1:
+            self.status(
+                f"{len(written)} filer - ett objekt i taget, redo att skrivas ut."
+            )
+        self.status("Modellen är exporterad utan att delas.")
 
     def start_cut(self) -> None:
         if self.plan is None or self.mesh_info is None:

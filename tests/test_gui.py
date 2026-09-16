@@ -1922,3 +1922,105 @@ def test_a_linked_resize_can_be_undone(qapp, window, tmp_path):
 
     widths = sorted(round(float(part.extents_mm[0])) for part in window.parts)
     assert widths == [230, 250]
+
+
+# --------------------------------------------------------------------------
+# Export utan att dela
+# --------------------------------------------------------------------------
+
+
+def test_export_is_offered_as_soon_as_a_model_is_open(qapp, window, tmp_path):
+    """Knappen ska vara död utan modell och levande med."""
+    import trimesh
+
+    assert not window.export_button.isEnabled()
+
+    path = tmp_path / "lada.stl"
+    trimesh.creation.box(extents=(40.0, 30.0, 20.0)).export(path)
+    window.load_model(path)
+    wait_for_worker(qapp, window)
+
+    assert window.export_button.isEnabled()
+    assert window.export_action.isEnabled()
+
+
+def test_exporting_writes_the_model_without_cutting(qapp, window, tmp_path, monkeypatch):
+    """Hela poängen: en fil ut, utan att modellen delas."""
+    import trimesh
+
+    path = tmp_path / "lada.stl"
+    trimesh.creation.box(extents=(40.0, 30.0, 20.0)).export(path)
+    window.load_model(path)
+    wait_for_worker(qapp, window)
+
+    target = tmp_path / "ut" / "hela.stl"
+    monkeypatch.setattr(
+        "stl_cutter.gui.app.QFileDialog.getSaveFileName",
+        lambda *a, **k: (str(target), ""),
+    )
+    window.export_model()
+    wait_for_worker(qapp, window)
+
+    assert target.exists()
+    back = trimesh.load(target)
+    assert back.is_watertight
+    assert back.extents == pytest.approx([40.0, 30.0, 20.0], abs=0.01)
+
+
+def test_exporting_several_objects_gives_one_file_each(qapp, window, tmp_path, monkeypatch):
+    window.load_model(_two_object_file(tmp_path))
+    wait_for_worker(qapp, window)
+
+    target = tmp_path / "ut" / "delar.stl"
+    monkeypatch.setattr(
+        "stl_cutter.gui.app.QFileDialog.getSaveFileName",
+        lambda *a, **k: (str(target), ""),
+    )
+    window.export_model()
+    wait_for_worker(qapp, window)
+
+    written = sorted(p.name for p in (tmp_path / "ut").glob("*.stl"))
+    assert written == ["delar_01.stl", "delar_02.stl"]
+
+
+def test_a_resized_model_is_what_gets_exported(qapp, window, tmp_path, monkeypatch):
+    """Exporten ska ge de ändrade måtten, inte filen som den lästes in."""
+    window.load_model(_two_object_file(tmp_path))
+    wait_for_worker(qapp, window)
+    window.part_combo.setCurrentIndex(_leader_index(window, 230))
+    qapp.processEvents()
+    window.target_x.setValue(270.0)
+    window.start_resize()
+    wait_for_worker(qapp, window)
+
+    target = tmp_path / "ut" / "delar.stl"
+    monkeypatch.setattr(
+        "stl_cutter.gui.app.QFileDialog.getSaveFileName",
+        lambda *a, **k: (str(target), ""),
+    )
+    window.export_model()
+    wait_for_worker(qapp, window)
+
+    import trimesh
+
+    widths = sorted(
+        round(float(trimesh.load(p).extents[0]))
+        for p in (tmp_path / "ut").glob("*.stl")
+    )
+    assert widths == [270, 290]
+
+
+def test_a_cancelled_export_writes_nothing(qapp, window, tmp_path, monkeypatch):
+    import trimesh
+
+    path = tmp_path / "lada.stl"
+    trimesh.creation.box(extents=(40.0, 30.0, 20.0)).export(path)
+    window.load_model(path)
+    wait_for_worker(qapp, window)
+
+    monkeypatch.setattr(
+        "stl_cutter.gui.app.QFileDialog.getSaveFileName", lambda *a, **k: ("", "")
+    )
+    window.export_model()
+
+    assert list(tmp_path.glob("*_ändrad.stl")) == []

@@ -253,6 +253,25 @@ ytterst, och dem flyttar måttändringen aldrig i förhållande till kanten. Då
 finns det inget att jämföra, och programmet säger det rakt ut i stället för
 att låta tystnaden se ut som ett godkänt svar.
 
+## Att få ut modellen utan att dela den
+
+Efter en måttändring är det ofta hela ärendet: modellen får plats på plattan
+som den är, eller ska tillbaka in i CAD. Då behöver man inte gå omvägen via en
+kapning.
+
+I gränssnittet: knappen **Exportera utan att dela** i rutan *1b. Ändra mått*,
+eller **Arkiv → Exportera modellen (utan att dela)**. På kommandoraden:
+
+```bash
+stl-cutter export modell.3mf --out ut/modell.stl
+```
+
+Innehåller filen flera objekt blir de en fil var, numrerade `_01`, `_02` och
+så vidare — en fil per utskrift. `--merge` lägger i stället allt i samma fil.
+
+Exporten städar samtidigt bort det som STL:s 32-bitars precision annars gör
+till trasiga kanter, så en fil som gått igenom den här vägen är hel i slicern.
+
 ## Vad som kontrolleras
 
 Efter varje måttändring körs sex kontroller, och **ingenting levereras om

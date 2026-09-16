@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from stl_cutter.cli import main
 from stl_cutter.core import exporter, mesh_io
 from stl_cutter.core.cutter import cut_mesh
@@ -235,3 +237,98 @@ def test_exported_parts_with_joints_reload_cleanly(tmp_path, big_box, printer):
     for path in export.part_files:
         info = mesh_io.load_mesh(path)
         assert info.watertight, f"{path.name} är inte hel efter export"
+
+
+# --------------------------------------------------------------------------
+# Export utan att dela
+# --------------------------------------------------------------------------
+
+
+def test_exporting_one_object_writes_exactly_that_file(tmp_path):
+    """Modellen ska gå att få ut som den är, utan att kapas."""
+    import trimesh
+
+    from stl_cutter.core import exporter as exporter_module
+
+    mesh = trimesh.creation.box(extents=(40.0, 30.0, 20.0))
+
+    written = exporter_module.export_model(mesh, tmp_path / "modell.stl")
+
+    assert [p.name for p in written] == ["modell.stl"]
+    back = trimesh.load(written[0])
+    assert back.is_watertight
+    assert back.extents == pytest.approx(mesh.extents, abs=0.01)
+
+
+def test_exporting_several_objects_writes_one_file_each(tmp_path):
+    """Varje objekt blir en egen utskrift och därmed en egen fil."""
+    import trimesh
+
+    from stl_cutter.core import exporter as exporter_module
+
+    a = trimesh.creation.box(extents=(40.0, 30.0, 20.0))
+    b = trimesh.creation.box(extents=(10.0, 10.0, 10.0))
+
+    written = exporter_module.export_model([a, b], tmp_path / "delar.stl")
+
+    assert [p.name for p in written] == ["delar_01.stl", "delar_02.stl"]
+    assert all(p.exists() for p in written)
+
+
+def test_the_export_format_follows_the_extension(tmp_path):
+    import trimesh
+
+    from stl_cutter.core import exporter as exporter_module
+
+    mesh = trimesh.creation.box(extents=(20.0, 20.0, 20.0))
+
+    written = exporter_module.export_model(mesh, tmp_path / "modell.3mf")
+
+    assert written[0].suffix == ".3mf"
+
+
+def test_an_unknown_export_format_is_refused(tmp_path):
+    import trimesh
+
+    from stl_cutter.core import exporter as exporter_module
+
+    with pytest.raises(ValueError):
+        exporter_module.export_model(
+            trimesh.creation.box(extents=(10.0, 10.0, 10.0)),
+            tmp_path / "modell.obj",
+        )
+
+
+def test_the_cli_exports_without_cutting(tmp_path, capsys):
+    """`export` ska skriva modellen som den är, en fil per objekt."""
+    import trimesh
+
+    a = trimesh.creation.box(extents=(40.0, 30.0, 20.0))
+    b = trimesh.creation.box(extents=(20.0, 20.0, 20.0))
+    b.apply_translation([200.0, 0.0, 0.0])
+    model = tmp_path / "tva.stl"
+    trimesh.util.concatenate([a, b]).export(model)
+
+    code = main(["export", str(model), "--out", str(tmp_path / "ut" / "modell.stl")])
+
+    assert code == 0
+    written = sorted(p.name for p in (tmp_path / "ut").glob("*.stl"))
+    assert written == ["modell_01.stl", "modell_02.stl"]
+
+
+def test_the_cli_can_keep_the_objects_in_one_file(tmp_path):
+    import trimesh
+
+    a = trimesh.creation.box(extents=(40.0, 30.0, 20.0))
+    b = trimesh.creation.box(extents=(20.0, 20.0, 20.0))
+    b.apply_translation([200.0, 0.0, 0.0])
+    model = tmp_path / "tva.stl"
+    trimesh.util.concatenate([a, b]).export(model)
+
+    code = main(
+        ["export", str(model), "--merge", "--out", str(tmp_path / "ut" / "allt.stl")]
+    )
+
+    assert code == 0
+    assert (tmp_path / "ut" / "allt.stl").exists()
+    assert sorted(p.name for p in (tmp_path / "ut").glob("*.stl")) == ["allt.stl"]
