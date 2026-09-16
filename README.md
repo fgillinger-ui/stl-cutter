@@ -235,6 +235,19 @@ väggar, fyllnad, lagerhöjd, temperatur och fläkt, var och en med skälet till
 sig. I gränssnittet ligger de bakom knappen **Utskriftsinställningar för
 styrka…**.
 
+Inställningarna följer inte med i STL-filen — en STL innehåller bara trianglar.
+Men de går att få som en profil slicern kan importera (OrcaSlicer, FlashPrint,
+Bambu Studio, Qidi Studio):
+
+```bash
+stl-cutter profile --load-kg 5 --base-profile "0.20mm Standard @FF C5" --out ./ut
+```
+
+eller knappen **Spara slicerprofil…** i rutan *3b. Belastning*. Namnet på
+basprofilen är det som står i slicerns rullgardin — profilen sätter bara det
+som rör hållfasthet och ärver resten därifrån. Se
+[docs/LOAD.md](docs/LOAD.md#profil-till-slicern).
+
 > **Vad programmet inte gör:** det räknar *inte* ut hur mycket hyllan bär.
 > Det kräver en strukturmodell av en godtycklig mesh, och FDM varierar
 > dessutom ±50 % med skrivare, material och kylning. Ett tal som ser ut att

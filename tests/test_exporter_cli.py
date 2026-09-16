@@ -533,3 +533,27 @@ def test_the_cli_export_lays_flat_unless_told_otherwise(tmp_path, capsys):
     assert main(["export", str(model), "--out", str(tmp_path / "ut" / "b.stl"),
                  "--no-lay-flat"]) == 0
     assert trimesh.load(tmp_path / "ut" / "b.stl").extents[2] == pytest.approx(180.0, abs=0.01)
+
+
+def test_the_cli_writes_a_slicer_profile(tmp_path, capsys):
+    import json
+
+    assert main(["profile", "--load-kg", "5", "--base-profile",
+                 "0.20mm Standard @FF C5", "--out", str(tmp_path / "prof")]) == 0
+
+    written = list((tmp_path / "prof").glob("*.json"))
+    assert len(written) == 1
+    data = json.loads(written[0].read_text(encoding="utf-8"))
+    assert data["inherits"] == "0.20mm Standard @FF C5"
+    assert data["wall_loops"] == "5"
+
+    out = capsys.readouterr().out
+    assert "Importera" in out, "utan importinstruktion är filen svår att använda"
+
+
+def test_the_cli_profile_needs_a_base(tmp_path, capsys):
+    code = main(["profile", "--load-kg", "5", "--base-profile", " ",
+                 "--out", str(tmp_path / "prof")])
+
+    assert code == 2
+    assert "rullgardin" in capsys.readouterr().err

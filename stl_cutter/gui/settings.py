@@ -30,6 +30,9 @@ class Settings:
     light_background: bool = True
     auto_orient: bool = True
     explode_mm: float = 0.0
+    #: Processprofilen i slicern som de skrivna profilerna ärver från. Bara
+    #: användaren vet vad den heter, så den kommer ihåg mellan körningar.
+    base_profile: str = ""
 
     @classmethod
     def load(cls, path: Path | None = None) -> "Settings":

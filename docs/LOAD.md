@@ -90,6 +90,38 @@ längst från neutrallagret.
 Vill du korta tiden: sänk fyllnaden och höj lagerhöjden. Spara inte in på
 väggarna eller temperaturen — det är de som bär.
 
+## Profil till slicern
+
+Inställningarna går att få som en fil slicern läser, i stället för att knappas
+in. OrcaSlicer och det som bygger på den — FlashPrint för Flashforge Creator 5,
+Bambu Studio, Qidi Studio — läser profiler som JSON:
+
+```bash
+stl-cutter profile --load-kg 5 --base-profile "0.20mm Standard @FF C5" --out ./ut
+```
+
+I gränssnittet: **Spara slicerprofil…** i rutan *3b. Belastning*. Importera
+sedan med *Arkiv → Importera → Importera konfiguration*.
+
+Profilen sätter **bara** de sju inställningar som har med hållfasthet att göra
+och ärver allt annat — hastigheter, accelerationer, stöd, primtorn — från den
+profil du redan använder. Därför måste du ange vad den heter: det som står i
+slicerns rullgardin. En fristående profil hade krävt att programmet hittade på
+de övriga hundra värdena, och en profil som ser komplett ut men har gissade
+hastigheter är sämre än ingen profil alls.
+
+Temperatur och fläkt hör till **filamentet**, inte processen, och skrivs bara
+om du säger vad du kör:
+
+```bash
+stl-cutter profile --load-kg 5 --base-profile "0.20mm Standard @FF C5" \
+    --filament-base "Flashforge HS PETG @FF C5" --filament-temp 235 --out ./ut
+```
+
+Skälet är detsamma som ovan: rådet är "+5 till +10 °C över det normala", och
+vad som är normalt beror på om det är PLA (215), PETG (235) eller ASA (255).
+Utan den uppgiften skrivs ingen filamentprofil, och det står varför.
+
 ## Marginal
 
 Ska lasten vara stor: provbelasta, med marginal, innan något dyrt ställs på

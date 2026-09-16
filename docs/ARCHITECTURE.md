@@ -18,7 +18,7 @@ Alla mått är i millimeter internt.
 
 ```
 stl_cutter/
-  cli.py              # kommandorad: cut / printers / --list-printers / --dry-run / --explain
+  cli.py              # kommandorad: cut / resize / export / profile / printers
   __main__.py         # python -m stl_cutter
   core/
     mesh_io.py        # ladda och spara STL/3MF, reparera, rapportera watertight
@@ -29,6 +29,7 @@ stl_cutter/
     assembly.py       # flera objekt i filen som ändrar mått tillsammans
     orient.py         # vänd en kapad del platt inför utskrift
     load.py           # var en belastad modell helst inte ska kapas
+    profile.py        # slicerprofil (JSON) med inställningarna för last
     planner.py        # orientering, kandidatplan, poängsättning
     cutter.py         # utför plansnitten, parar ihop grannar, bygger fogar
     exporter.py       # skriver part_NN.stl + split_report.json

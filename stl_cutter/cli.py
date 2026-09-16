@@ -18,7 +18,8 @@ from dataclasses import replace
 from pathlib import Path
 
 from .core import assembly as assembly_core
-from .core import exporter, load as load_core, mesh_io, resize as resize_core
+from .core import exporter, load as load_core, mesh_io, profile as profile_core
+from .core import resize as resize_core
 from .core.cutter import cut_mesh, parts_fit
 from .core.planner import plan_splits
 from .core.printers import PrinterProfile, get_printer, load_printers, save_profile
@@ -264,6 +265,51 @@ def build_parser() -> argparse.ArgumentParser:
         "på högkant med stöd överallt.",
     )
 
+    profile_cmd = sub.add_parser(
+        "profile",
+        help="Skriv en slicerprofil med inställningarna för en bärande del.",
+    )
+    profile_cmd.add_argument(
+        "--load-kg",
+        type=float,
+        required=True,
+        metavar="KG",
+        help="Vikten delen ska bära.",
+    )
+    profile_cmd.add_argument(
+        "--base-profile",
+        required=True,
+        metavar="NAMN",
+        help="Processprofilen den bygger på - namnet som står i slicerns "
+        "rullgardin, till exempel '0.20mm Standard @FF C5'. Profilen sätter "
+        "bara det som rör hållfasthet; allt annat ärvs därifrån.",
+    )
+    profile_cmd.add_argument(
+        "--name", default="Bärande delar", help="Namn på den nya profilen."
+    )
+    profile_cmd.add_argument(
+        "--nozzle", type=float, default=0.4, metavar="MM", help="Munstyckets diameter."
+    )
+    profile_cmd.add_argument(
+        "--filament-base",
+        default="",
+        metavar="NAMN",
+        help="Filamentprofilen att bygga på, till exempel "
+        "'Flashforge HS PETG @FF C5'. Krävs tillsammans med --filament-temp "
+        "för att temperatur och fläkt ska skrivas.",
+    )
+    profile_cmd.add_argument(
+        "--filament-temp",
+        type=float,
+        default=0.0,
+        metavar="C",
+        help="Filamentets normala munstyckstemperatur. Profilen lägger på "
+        f"{profile_core.TEMPERATURE_BOOST_C} °C för bättre lagerhäftning.",
+    )
+    profile_cmd.add_argument(
+        "--out", type=Path, default=Path("./ut"), help="Målmapp för profilfilerna."
+    )
+
     spans_cmd = sub.add_parser(
         "analyze-spans",
         help="Visa var modellen går att sträcka - partierna med konstant tvärsnitt.",
@@ -505,6 +551,45 @@ def _cmd_export(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_profile(args: argparse.Namespace) -> int:
+    """Skriv slicerprofilen utan att gå via en modell.
+
+    Inställningarna följer av lasten, inte av geometrin, så det behövs ingen
+    fil. Vill man se skälen till dem står de i `cut --load-kg`.
+    """
+    case = load_core.LoadCase(mass_kg=args.load_kg, support="cantilever")
+    if not case.active:
+        print("Ange en vikt större än noll med --load-kg.", file=sys.stderr)
+        return 2
+
+    try:
+        bundle = profile_core.write_profiles(
+            case,
+            args.out,
+            base_profile=args.base_profile,
+            name=args.name,
+            nozzle_mm=args.nozzle,
+            filament_base=args.filament_base,
+            normal_temp_c=args.filament_temp,
+        )
+    except profile_core.ProfileError as error:
+        print(str(error), file=sys.stderr)
+        return 2
+
+    print("Skrev:")
+    for path in bundle.files:
+        print(f"  {path}")
+    for note in bundle.notes:
+        print(f"\n{note}")
+    print(
+        "\nImportera i slicern: Arkiv -> Importera -> Importera "
+        "konfiguration, och välj filen."
+    )
+    print()
+    print(load_core.describe_advice(case, nozzle_mm=args.nozzle))
+    return 0
+
+
 def _cmd_analyze_spans(args: argparse.Namespace) -> int:
     info = mesh_io.load_mesh(args.model)
     print(info.summary())
@@ -682,6 +767,8 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_resize(args)
         if args.command == "export":
             return _cmd_export(args)
+        if args.command == "profile":
+            return _cmd_profile(args)
         if args.command == "analyze-spans":
             return _cmd_analyze_spans(args)
         if args.command == "printers":

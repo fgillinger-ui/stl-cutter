@@ -43,7 +43,8 @@ from PySide6.QtWidgets import (
 )
 
 from ..core import assembly as assembly_core
-from ..core import exporter, load as load_core, mesh_io, resize as resize_core
+from ..core import exporter, load as load_core, mesh_io, profile as profile_core
+from ..core import resize as resize_core
 from ..core.cutter import cut_mesh, parts_fit
 from ..core.planner import (
     AXIS_NAMES,
@@ -401,6 +402,16 @@ class MainWindow(QMainWindow):
         self.advice_button = QPushButton("Utskriftsinställningar för styrka…")
         self.advice_button.clicked.connect(self.show_print_advice)
         layout.addWidget(self.advice_button)
+
+        self.profile_button = QPushButton("Spara slicerprofil…")
+        self.profile_button.setToolTip(
+            "Skriver inställningarna som en JSON-profil att importera i\n"
+            "slicern (OrcaSlicer, FlashPrint, Bambu Studio, Qidi Studio).\n"
+            "Profilen sätter bara det som rör hållfasthet - resten ärvs från\n"
+            "den profil du redan använder."
+        )
+        self.profile_button.clicked.connect(self.save_slicer_profile)
+        layout.addWidget(self.profile_button)
 
         self._on_load_changed()
         return box
@@ -1313,6 +1324,7 @@ class MainWindow(QMainWindow):
             self.load_axis_combo,
             self.load_end_combo,
             self.advice_button,
+            self.profile_button,
         ):
             widget.setEnabled(active)
 
@@ -1341,6 +1353,53 @@ class MainWindow(QMainWindow):
         box.setTextFormat(Qt.PlainText)
         box.setText(load_core.describe_advice(case))
         box.exec()
+
+    def save_slicer_profile(self) -> None:
+        """Skriv inställningarna som en profil slicern kan importera.
+
+        Profilen ärver från den processprofil användaren redan använder, och
+        namnet på den kan bara användaren själv ge - det står i slicerns
+        rullgardin. Utan den vet profilen ingenting om skrivaren, så den
+        frågas efter i stället för att gissas.
+        """
+        case = self.current_load()
+        if case is None or not case.active:
+            self.status("Kryssa i Belastning och ange vikten först.", error=True)
+            return
+
+        base, ok = QInputDialog.getText(
+            self,
+            "Vilken profil ska den bygga på?",
+            "Namnet på processprofilen i slicern, precis som det står där:",
+            text=self.settings.base_profile,
+        )
+        if not ok or not base.strip():
+            return
+        self.settings.base_profile = base.strip()
+
+        directory = QFileDialog.getExistingDirectory(
+            self,
+            "Var ska profilen sparas?",
+            self.settings.last_output_dir or str(Path.home()),
+        )
+        if not directory:
+            return
+
+        try:
+            bundle = profile_core.write_profiles(
+                case, directory, base_profile=base, name="Bärande delar"
+            )
+        except profile_core.ProfileError as error:
+            self.status(str(error), error=True)
+            return
+
+        for path in bundle.files:
+            self.status(f"Skrev {path}")
+        for note in bundle.notes:
+            self.status(note)
+        self.status(
+            "Importera i slicern: Arkiv → Importera → Importera konfiguration."
+        )
 
     def start_analysis(self) -> None:
         if self.mesh_info is None:
