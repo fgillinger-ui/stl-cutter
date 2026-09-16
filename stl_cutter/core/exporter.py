@@ -91,3 +91,44 @@ def write_plan_only(
     }
     report_file.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
     return report_file
+
+
+def export_model(meshes, path: str | Path, file_format: str | None = None) -> list[Path]:
+    """Skriv modellen som den är, utan att dela den.
+
+    Det vanliga flödet kapar modellen, men efter en måttändring vill man ofta
+    bara ha ut den ändrade modellen - den kanske får plats på plattan som den
+    är, eller ska tillbaka in i CAD.
+
+    `meshes` är en mesh eller en lista av meshar (filens objekt). Med flera
+    objekt numreras filerna `<namn>_01`, `<namn>_02` och så vidare, precis som
+    `resize` på kommandoraden gör, så att varje objekt blir en egen utskrift.
+
+    Formatet följer filändelsen om inget annat anges. Returnerar sökvägarna
+    som faktiskt skrevs - 3MF kan falla tillbaka på STL om biblioteksstödet
+    saknas, och då är det den filen man vill visa användaren.
+    """
+    path = Path(path)
+    if not isinstance(meshes, (list, tuple)):
+        meshes = [meshes]
+    if not meshes:
+        raise ValueError("Ingen geometri att exportera.")
+
+    suffix = path.suffix or ".stl"
+    fmt = (file_format or suffix.lstrip(".")).lower()
+    if fmt not in ("stl", "3mf"):
+        raise ValueError(f"Okänt filformat: {fmt!r}. Använd stl eller 3mf.")
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    written: list[Path] = []
+    for index, mesh in enumerate(meshes, start=1):
+        if len(meshes) == 1:
+            target = path.with_suffix(f".{fmt}")
+        else:
+            target = path.with_name(f"{path.stem}_{index:02d}.{fmt}")
+        if fmt == "3mf":
+            written.append(mesh_io.save_3mf(mesh, target))
+        else:
+            written.append(mesh_io.save_stl(mesh, target))
+    return written

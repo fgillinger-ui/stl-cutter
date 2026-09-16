@@ -5,6 +5,7 @@ Exempel:
     python -m stl_cutter.cli --list-printers
     python -m stl_cutter.cli cut modell.stl --printer "Prusa MK4" --dry-run
     python -m stl_cutter.cli resize modell.stl --y 550 --out modell_550.stl
+    python -m stl_cutter.cli export modell.3mf --out ./ut/modell.stl
     python -m stl_cutter.cli analyze-spans modell.stl --axis y
 """
 
@@ -191,6 +192,30 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_resize_options(resize_cmd)
 
+    export_cmd = sub.add_parser(
+        "export",
+        help="Skriv modellen som den är, utan att dela den.",
+    )
+    export_cmd.add_argument("model", type=Path, help="Sökväg till STL- eller 3MF-fil.")
+    export_cmd.add_argument(
+        "--out",
+        type=Path,
+        default=None,
+        help="Målfil. Standard: <modell>_export.stl. Flera objekt i filen "
+        "numreras _01, _02 och så vidare.",
+    )
+    export_cmd.add_argument(
+        "--format",
+        choices=["stl", "3mf"],
+        default=None,
+        help="Filformat. Standard: följer målfilens ändelse.",
+    )
+    export_cmd.add_argument(
+        "--merge",
+        action="store_true",
+        help="Skriv alla objekt i en enda fil i stället för en fil per objekt.",
+    )
+
     spans_cmd = sub.add_parser(
         "analyze-spans",
         help="Visa var modellen går att sträcka - partierna med konstant tvärsnitt.",
@@ -371,6 +396,37 @@ def _resize_linked(args, parts, targets, selection, span_index) -> int:
     return 0
 
 
+def _cmd_export(args: argparse.Namespace) -> int:
+    """Skriv modellen utan att kapa den.
+
+    Nyttigt efter en måttändring, eller bara för att laga och konvertera en
+    fil: inläsningen reparerar meshen och exporten städar bort det som STL:s
+    precision annars skulle göra till trasiga kanter.
+    """
+    info = mesh_io.load_mesh(args.model)
+    print(info.summary())
+    for repair in info.repairs:
+        print(f"  reparation: {repair}")
+
+    out = args.out or args.model.with_name(f"{args.model.stem}_export.stl")
+
+    meshes = [info.mesh]
+    if not args.merge:
+        parts = assembly_core.split_parts(info.mesh)
+        if len(parts) > 1:
+            print(f"\nFilen innehåller {len(parts)} separata objekt:")
+            for index, part in enumerate(parts, start=1):
+                print(f"  {index}. {part.summary()}")
+            meshes = [part.mesh for part in parts]
+
+    written = exporter.export_model(meshes, out, file_format=args.format)
+    print("\nSkrev:")
+    for path in written:
+        x, y, z = mesh_io.load_mesh(path, repair=False).extents_mm
+        print(f"  {path} ({x:.1f} x {y:.1f} x {z:.1f} mm)")
+    return 0
+
+
 def _cmd_analyze_spans(args: argparse.Namespace) -> int:
     info = mesh_io.load_mesh(args.model)
     print(info.summary())
@@ -534,6 +590,8 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_cut(args)
         if args.command == "resize":
             return _cmd_resize(args)
+        if args.command == "export":
+            return _cmd_export(args)
         if args.command == "analyze-spans":
             return _cmd_analyze_spans(args)
         if args.command == "printers":

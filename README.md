@@ -199,6 +199,17 @@ stl-cutter resize nas.3mf --x 270 --part 2 --out ut/nas.stl
 I gränssnittet dyker då en rullgardin **Objekt** upp i rutan *1b. Ändra mått*.
 Se [docs/RESIZE.md](docs/RESIZE.md#flera-objekt-i-samma-fil).
 
+Behöver modellen inte delas — den får plats som den är, eller ska tillbaka in
+i CAD — skriver `export` ut den utan att kapa:
+
+```bash
+stl-cutter export modell.3mf --out ut/modell.stl
+```
+
+Flera objekt i filen blir en fil var (`modell_01.stl`, `modell_02.stl`);
+`--merge` lägger allt i samma fil. I gränssnittet heter det **Exportera utan
+att dela** i rutan *1b. Ändra mått*, och finns även under **Arkiv**.
+
 Ändra måttet och kapa i ett svep:
 
 ```bash
