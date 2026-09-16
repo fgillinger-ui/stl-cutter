@@ -10,7 +10,7 @@ import trimesh
 
 from .joints import JointParams, build_joint, validate_parts
 from .mesh_io import open_edge_count, repair_mesh
-from .planner import Plane, SplitPlan
+from .planner import AXIS_NAMES, Plane, SplitPlan
 from .progress import report
 
 log = logging.getLogger(__name__)
@@ -368,18 +368,45 @@ def _boxes_overlap(a: trimesh.Trimesh, b: trimesh.Trimesh) -> bool:
     return sum(1 for value in overlaps if value > MIN_OVERLAP_MM) >= 2
 
 
-def build_volume_slack(part: "Part", printer) -> float:
+def build_volume_slack(part: "Part", printer, axis: int | None = None) -> float:
     """Hur mycket en del får växa och ändå få plats på byggplattan.
 
-    Delen får vridas på plattan, så måtten jämförs sorterade. Det minsta
-    överskottet är det som begränsar - växer delen mer än så får den inte plats
-    i någon orientering.
+    Delen får vridas på plattan, så måtten jämförs sorterade: den får plats om
+    varje sorterat mått ryms i motsvarande sorterat byggmått.
+
+    `axis` är den riktning delen faktiskt växer i, alltså fogens nyckel längs
+    snittets normal. **Det spelar all roll.** Utan axel togs det minsta
+    överskottet över alla tre måtten, och en hyllram 250 x 201 x 182 mm på en
+    252 mm plåt fick då svaret 2 mm - marginalen i X, en riktning fogen inte
+    rör. I Y, där nyckeln sticker ut, fanns 51 mm. Laxstjärten vägrades alltså
+    för att en annan axel var trång, och delarna kom ut utan fog.
+
+    Utan `axel` (eller för ett vinklat snitt, där nyckeln pekar snett och
+    växer i flera riktningar samtidigt) gäller det gamla, försiktiga svaret.
     """
     if printer is None:
         return 1e6
     usable = sorted(printer.usable)
-    extents = sorted(part.extents_mm)
-    return float(min(limit - size for limit, size in zip(usable, extents)))
+    extents = [float(v) for v in part.extents_mm]
+    worst = float(min(limit - size for limit, size in zip(usable, sorted(extents))))
+    if axis is None:
+        return worst
+
+    def fits(growth: float) -> bool:
+        grown = list(extents)
+        grown[axis] += growth
+        return all(size <= limit + 1e-9 for size, limit in zip(sorted(grown), usable))
+
+    if not fits(0.0):
+        # Delen får inte plats ens som den är - då är det inte fogen som är
+        # problemet, och det svaret ska inte se bättre ut än det är.
+        return worst
+
+    low, high = 0.0, float(max(usable))
+    while high - low > 0.01:
+        middle = (low + high) / 2.0
+        low, high = (middle, high) if fits(middle) else (low, middle)
+    return low
 
 
 def _params_for(cut, printer, force_joint: str | None) -> JointParams:
@@ -422,15 +449,25 @@ def apply_joints(
         # bygget, eftersom fogen kan vändas om materialet tar slut. Ta därför
         # den minsta marginalen av de två, annars byter vi ett problem mot ett
         # värre: en del som inte får plats på byggplattan.
+        #
+        # Nyckeln växer längs snittets normal, så det är den axeln som ska
+        # mätas. Ett vinklat snitt pekar snett och växer åt flera håll - då
+        # gäller det försiktiga svaret över alla axlar.
+        grow_axis = cut.plane.axis if cut.plane.is_axis_aligned else None
         slack = min(
-            build_volume_slack(part_a, printer), build_volume_slack(part_b, printer)
+            build_volume_slack(part_a, printer, grow_axis),
+            build_volume_slack(part_b, printer, grow_axis),
         )
         params.max_protrusion_mm = max(slack - JOINT_SIZE_RESERVE_MM, 0.0)
         if params.max_protrusion_mm < MIN_USEFUL_PROTRUSION_MM:
+            where = (
+                f" i {AXIS_NAMES[grow_axis]}" if grow_axis is not None else ""
+            )
             message = (
                 f"Snitt {cut.index}, del {part_a.index:02d}-{part_b.index:02d}: bara "
-                f"{max(slack, 0.0):.1f} mm marginal till byggvolymen, så fogen får "
-                "inte plats. Öka marginalen i skrivarprofilen eller kapa i fler delar."
+                f"{max(slack, 0.0):.1f} mm marginal till byggvolymen{where}, så fogen "
+                "får inte plats. Öka marginalen i skrivarprofilen eller kapa i "
+                "fler delar."
             )
             result.warnings.append(message)
             log.warning(message)
