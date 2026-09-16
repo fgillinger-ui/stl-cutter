@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import mesh_io
+from . import orient as orient_core
 from .cutter import CutResult
 from .printers import PrinterProfile
 
@@ -46,26 +47,60 @@ def build_report(
     return report
 
 
+def _bodies_of(mesh):
+    """Delens sammanhängande kroppar var för sig.
+
+    Ett snitt kan lämna en del i flera lösa klumpar - en ribba som kapades av
+    på båda sidor hänger inte ihop med resten. Ligger de i samma fil ser
+    slicern dem som ett objekt och man kan varken vända eller placera dem var
+    för sig. Kroppar som *möts* hålls ihop; det är bara de som ligger isär som
+    skiljs åt.
+    """
+    from . import assembly as assembly_core
+
+    try:
+        return [part.mesh for part in assembly_core.split_parts(mesh)]
+    except Exception:  # pragma: no cover - försvar mot udda geometri
+        log.exception("Kunde inte dela upp delen i kroppar - skriver den hel")
+        return [mesh]
+
+
 def export_parts(
     result: CutResult,
     out_dir: str | Path,
     printer: PrinterProfile,
     source: Path | None = None,
     file_format: str = "stl",
+    lay_flat: bool = True,
+    split_bodies: bool = True,
 ) -> ExportResult:
-    """Skriv `part_01.stl` … `part_NN.stl` samt `split_report.json`."""
+    """Skriv `part_01.stl` … `part_NN.stl` samt `split_report.json`.
+
+    `lay_flat` vänder varje del till sitt plattaste läge, vilket tar bort
+    stödbehov och lägger lagren rätt för hållfastheten - se `core.orient`.
+
+    `split_bodies` skriver lösa kroppar i samma del som egna filer, numrerade
+    `part_03a`, `part_03b` och så vidare, så att varje utskrift blir en fil.
+    """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     part_files: list[Path] = []
     for part in result.parts:
-        name = f"part_{part.index:02d}"
-        if file_format.lower() == "3mf":
-            path = mesh_io.save_3mf(part.mesh, out_dir / f"{name}.3mf")
-        else:
-            path = mesh_io.save_stl(part.mesh, out_dir / f"{name}.stl")
-        part_files.append(path)
-        log.info("Skrev %s", path.name)
+        bodies = _bodies_of(part.mesh) if split_bodies else [part.mesh]
+        for order, body in enumerate(bodies):
+            name = f"part_{part.index:02d}"
+            if len(bodies) > 1:
+                name += chr(ord("a") + order)
+            if lay_flat:
+                body, height = orient_core.lay_flat(body)
+                log.info("%s: %s", name, orient_core.describe_orientation(part.mesh, body))
+            if file_format.lower() == "3mf":
+                path = mesh_io.save_3mf(body, out_dir / f"{name}.3mf")
+            else:
+                path = mesh_io.save_stl(body, out_dir / f"{name}.stl")
+            part_files.append(path)
+            log.info("Skrev %s", path.name)
 
     report_file = out_dir / REPORT_NAME
     report = build_report(result, printer, source=source, part_files=part_files)

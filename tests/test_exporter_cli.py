@@ -332,3 +332,116 @@ def test_the_cli_can_keep_the_objects_in_one_file(tmp_path):
     assert code == 0
     assert (tmp_path / "ut" / "allt.stl").exists()
     assert sorted(p.name for p in (tmp_path / "ut").glob("*.stl")) == ["allt.stl"]
+
+
+# --------------------------------------------------------------------------
+# Export av kapade delar: vänd platt och dela upp lösa kroppar
+# --------------------------------------------------------------------------
+
+
+def _result_with(meshes):
+    """Ett CutResult av färdiga meshar, utan att gå vägen via en kapning."""
+    from stl_cutter.core.cutter import CutResult, Part
+    from stl_cutter.core.planner import SplitPlan
+
+    parts = [Part(index=i, mesh=m) for i, m in enumerate(meshes, start=1)]
+    plan = SplitPlan(cuts=[], part_count=len(parts), part_boxes=[], orientation_name="test")
+    return CutResult(
+        parts=parts,
+        original_volume_mm3=sum(abs(m.volume) for m in meshes),
+        plan=plan,
+    )
+
+
+def test_exported_parts_are_laid_flat(tmp_path, printer):
+    """En del på högkant ska ligga ner i filen."""
+    import numpy as np
+    import trimesh
+
+    upright = trimesh.creation.box(extents=(120.0, 80.0, 10.0))
+    upright.apply_transform(trimesh.transformations.rotation_matrix(np.pi / 2, [1, 0, 0]))
+
+    out = exporter.export_parts(_result_with([upright]), tmp_path / "ut", printer)
+
+    written = trimesh.load(out.part_files[0])
+    assert written.extents[2] == pytest.approx(10.0, abs=0.01)
+
+
+def test_laying_flat_can_be_turned_off(tmp_path, printer):
+    import numpy as np
+    import trimesh
+
+    upright = trimesh.creation.box(extents=(120.0, 80.0, 10.0))
+    upright.apply_transform(trimesh.transformations.rotation_matrix(np.pi / 2, [1, 0, 0]))
+
+    out = exporter.export_parts(
+        _result_with([upright]), tmp_path / "ut", printer, lay_flat=False
+    )
+
+    written = trimesh.load(out.part_files[0])
+    assert written.extents[2] == pytest.approx(80.0, abs=0.01)
+
+
+def test_loose_bodies_become_separate_files(tmp_path, printer):
+    """En del som faller i två lösa klumpar ska bli två filer.
+
+    Ligger de i samma fil ser slicern dem som ett objekt, och då går det
+    varken att vända eller placera dem var för sig.
+    """
+    import trimesh
+
+    a = trimesh.creation.box(extents=(40.0, 30.0, 20.0))
+    b = trimesh.creation.box(extents=(20.0, 20.0, 20.0))
+    b.apply_translation([200.0, 0.0, 0.0])
+    loose = trimesh.util.concatenate([a, b])
+
+    out = exporter.export_parts(_result_with([loose]), tmp_path / "ut", printer)
+
+    assert sorted(p.name for p in out.part_files) == ["part_01a.stl", "part_01b.stl"]
+    for path in out.part_files:
+        assert trimesh.load(path).is_watertight
+
+
+def test_a_part_in_one_piece_keeps_its_plain_name(tmp_path, printer):
+    """Bokstavssuffixet ska bara dyka upp när det behövs."""
+    import trimesh
+
+    out = exporter.export_parts(
+        _result_with([trimesh.creation.box(extents=(40.0, 30.0, 20.0))]),
+        tmp_path / "ut",
+        printer,
+    )
+
+    assert [p.name for p in out.part_files] == ["part_01.stl"]
+
+
+def test_splitting_loose_bodies_can_be_turned_off(tmp_path, printer):
+    import trimesh
+
+    a = trimesh.creation.box(extents=(40.0, 30.0, 20.0))
+    b = trimesh.creation.box(extents=(20.0, 20.0, 20.0))
+    b.apply_translation([200.0, 0.0, 0.0])
+
+    out = exporter.export_parts(
+        _result_with([trimesh.util.concatenate([a, b])]),
+        tmp_path / "ut",
+        printer,
+        split_bodies=False,
+    )
+
+    assert [p.name for p in out.part_files] == ["part_01.stl"]
+
+
+def test_touching_bodies_in_a_part_are_not_split(tmp_path, printer):
+    """Kroppar som möts är ett föremål och ska förbli en fil."""
+    import trimesh
+
+    a = trimesh.creation.box(extents=(20.0, 20.0, 20.0))
+    b = trimesh.creation.box(extents=(20.0, 20.0, 20.0))
+    b.apply_translation([20.0, 0.0, 0.0])  # yta mot yta
+
+    out = exporter.export_parts(
+        _result_with([trimesh.util.concatenate([a, b])]), tmp_path / "ut", printer
+    )
+
+    assert [p.name for p in out.part_files] == ["part_01.stl"]

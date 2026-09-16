@@ -163,6 +163,18 @@ def build_parser() -> argparse.ArgumentParser:
         )
     _add_resize_options(cut)
     cut.add_argument(
+        "--no-lay-flat",
+        action="store_true",
+        help="Vänd inte delarna platt inför utskrift - skriv dem i modellens "
+        "egen orientering.",
+    )
+    cut.add_argument(
+        "--no-split-bodies",
+        action="store_true",
+        help="Skriv lösa kroppar i samma del i en och samma fil i stället för "
+        "en fil per kropp.",
+    )
+    cut.add_argument(
         "--no-analysis",
         action="store_true",
         help="Hoppa över analys av snittytor - snabbare, men snitten läggs jämnt fördelade.",
@@ -545,7 +557,13 @@ def _cmd_cut(args: argparse.Namespace) -> int:
         print(f"VARNING: delarna {too_big} får fortfarande inte plats i byggvolymen.")
 
     export = exporter.export_parts(
-        result, args.out, printer, source=args.model, file_format=args.format
+        result,
+        args.out,
+        printer,
+        source=args.model,
+        file_format=args.format,
+        lay_flat=not args.no_lay_flat,
+        split_bodies=not args.no_split_bodies,
     )
     print(f"Skrev {len(export.part_files)} filer till {export.directory}")
     print(f"Rapport: {export.report_file}")

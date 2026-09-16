@@ -199,6 +199,14 @@ stl-cutter resize nas.3mf --x 270 --part 2 --out ut/nas.stl
 I gränssnittet dyker då en rullgardin **Objekt** upp i rutan *1b. Ändra mått*.
 Se [docs/RESIZE.md](docs/RESIZE.md#flera-objekt-i-samma-fil).
 
+Delarna skrivs **vända platt** och med **lösa kroppar i egna filer**. Det
+första tar bort stödbehovet och lägger utskriftens lager längs delen i stället
+för tvärs — en list som står upp knäcks i lagerfogen, samma list liggande
+håller flera gånger mer. Det andra gör att en del som föll i flera klumpar blir
+en fil per klump, så att varje utskrift går att vända och placera för sig. Båda
+går att stänga av: kryssrutorna i rutan *5. Kapa och exportera*, eller
+`--no-lay-flat` och `--no-split-bodies` på kommandoraden.
+
 Behöver modellen inte delas — den får plats som den är, eller ska tillbaka in
 i CAD — skriver `export` ut den utan att kapa:
 

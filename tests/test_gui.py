@@ -2024,3 +2024,27 @@ def test_a_cancelled_export_writes_nothing(qapp, window, tmp_path, monkeypatch):
     window.export_model()
 
     assert list(tmp_path.glob("*_ändrad.stl")) == []
+
+
+def test_the_cut_export_lays_parts_flat_by_default(qapp, window, model_file, tmp_path):
+    """Delarna ska komma ut platta utan att man behöver ställa något."""
+    import trimesh
+
+    window.settings.last_output_dir = str(tmp_path / "ut")
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+    assert window.lay_flat_check.isChecked()
+    assert window.split_bodies_check.isChecked()
+
+    window.start_analysis()
+    wait_for_worker(qapp, window)
+    window.start_cut()
+    wait_for_worker(qapp, window)
+
+    written = sorted((tmp_path / "ut").glob("part_*.stl"))
+    assert written, "inga delar skrevs"
+    for path in written:
+        mesh = trimesh.load(path)
+        assert mesh.extents[2] == pytest.approx(min(mesh.extents), abs=0.01), (
+            f"{path.name} ligger inte platt"
+        )

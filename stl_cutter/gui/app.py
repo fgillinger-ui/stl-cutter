@@ -462,6 +462,24 @@ class MainWindow(QMainWindow):
         row.addWidget(choose)
         layout.addLayout(row)
 
+        self.lay_flat_check = QCheckBox("Vänd delarna platt inför utskrift")
+        self.lay_flat_check.setChecked(True)
+        self.lay_flat_check.setToolTip(
+            "Varje del vrids till sitt plattaste läge. Det tar bort stödbehovet\n"
+            "och lägger utskriftens lager längs delen i stället för tvärs, vilket\n"
+            "gör den flera gånger starkare i böjning."
+        )
+        layout.addWidget(self.lay_flat_check)
+
+        self.split_bodies_check = QCheckBox("Lösa kroppar som egna filer")
+        self.split_bodies_check.setChecked(True)
+        self.split_bodies_check.setToolTip(
+            "Faller en del i flera lösa klumpar blir varje klump en egen fil\n"
+            "(part_03a, part_03b …). I samma fil ser slicern dem som ett objekt\n"
+            "och de går varken att vända eller placera var för sig."
+        )
+        layout.addWidget(self.split_bodies_check)
+
         self.preview_button = QPushButton("Förhandsgranska (kapar inte filen)")
         self.preview_button.setEnabled(False)
         self.preview_button.setToolTip(
@@ -1854,6 +1872,8 @@ class MainWindow(QMainWindow):
         out_dir = Path(self.settings.last_output_dir)
 
         ready = self.result
+        lay_flat = self.lay_flat_check.isChecked()
+        split_bodies = self.split_bodies_check.isChecked()
 
         def work(progress=None):
             # Har vi redan förhandsgranskat samma plan behöver vi inte kapa igen.
@@ -1863,7 +1883,14 @@ class MainWindow(QMainWindow):
                     mesh, plan, joints=True, printer=printer, progress=progress
                 )
             progress(0.97, "Skriver filer")
-            export = exporter.export_parts(result, out_dir, printer, source=source)
+            export = exporter.export_parts(
+                result,
+                out_dir,
+                printer,
+                source=source,
+                lay_flat=lay_flat,
+                split_bodies=split_bodies,
+            )
             return result, export
 
         self._start(work, self._on_cut_done, "Kapar modellen…")
