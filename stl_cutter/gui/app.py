@@ -1002,7 +1002,12 @@ class MainWindow(QMainWindow):
         mode = "scale" if self.scale_anyway.isChecked() else "preserve"
         selection = self.span_selection.currentData() or "auto"
 
-        if len(self.parts) > 1 and self.link_parts.isChecked():
+        if len(self.parts) > 1:
+            # Måtten i fälten gäller det VALDA objektet, inte hela filens låda.
+            # Därför måste vägen gå via assembly även när kryssrutan är ur -
+            # då ändras bara det valda objektet. Skickades måttet i stället till
+            # en vanlig måttändring av hela meshen bad man om något helt annat:
+            # "gör filens djup 280" i stället för "gör hyllans djup 280".
             self._start_linked_resize(targets, mode, selection)
             return
 
@@ -1032,6 +1037,8 @@ class MainWindow(QMainWindow):
         """
         parts = list(self.parts)
         leader = self._selected_part()
+        follow = [self.link_parts.isChecked()] * len(parts)
+        follow[leader] = True
 
         def work(progress=None):
             current = parts
@@ -1046,6 +1053,7 @@ class MainWindow(QMainWindow):
                         axis=axis,
                         target_mm=float(targets[axis]),
                         leader=leader,
+                        follow=follow,
                         mode=mode,
                         span_selection=selection,
                     )
