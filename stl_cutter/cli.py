@@ -19,6 +19,7 @@ from pathlib import Path
 
 from .core import assembly as assembly_core
 from .core import exporter, load as load_core, mesh_io, profile as profile_core
+from .core import project as project_core
 from .core import resize as resize_core
 from .core.cutter import cut_mesh, parts_fit
 from .core.planner import plan_splits
@@ -310,6 +311,26 @@ def build_parser() -> argparse.ArgumentParser:
         "--out", type=Path, default=Path("./ut"), help="Målmapp för profilfilerna."
     )
 
+    project_cmd = sub.add_parser(
+        "project",
+        help="Kör om ett sparat projekt, eller visa vad det innehåller.",
+    )
+    project_cmd.add_argument("file", type=Path, help=f"Projektfil ({project_core.PROJECT_SUFFIX}).")
+    project_cmd.add_argument(
+        "--out",
+        type=Path,
+        default=None,
+        help="Målmapp för delarna. Standard: den som sparades i projektet.",
+    )
+    project_cmd.add_argument(
+        "--info",
+        action="store_true",
+        help="Visa bara vad projektet innehåller, kapa inte.",
+    )
+    project_cmd.add_argument(
+        "--format", choices=["stl", "3mf"], default="stl", help="Filformat för delarna."
+    )
+
     spans_cmd = sub.add_parser(
         "analyze-spans",
         help="Visa var modellen går att sträcka - partierna med konstant tvärsnitt.",
@@ -590,6 +611,87 @@ def _cmd_profile(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_project(args: argparse.Namespace) -> int:
+    """Kör om ett sparat projekt.
+
+    Snitten är användarens beslut och läggs exakt där de sparades - ingen
+    omplanering. Det är hela poängen: samma projekt ska ge samma delar.
+    """
+    from .core.cutter import cut_mesh
+    from .core.planner import make_cut, plan_from_cuts
+    from .core.recommender import build_recommendation
+
+    try:
+        project = project_core.load_project(args.file)
+    except project_core.ProjectError as error:
+        print(str(error), file=sys.stderr)
+        return 2
+
+    print(project.describe())
+    if args.info:
+        return 0
+
+    out = args.out or (Path(project.output_dir) if project.output_dir else Path("./ut"))
+    if not project.cuts:
+        print(
+            "\nProjektet har inga snitt sparade. Öppna det i gränssnittet och "
+            "klicka Analysera, eller kör 'cut' på modellen.",
+            file=sys.stderr,
+        )
+        return 2
+
+    printer = project.printer
+    cuts = []
+    for number, saved in enumerate(project.cuts, start=1):
+        info = make_cut(
+            project.mesh,
+            saved.axis,
+            saved.position_mm,
+            index=number,
+            printer=printer,
+            assembly_intent=project.assembly_intent,
+            normal=saved.normal if saved.has_normal else None,
+        )
+        if saved.joint_type and info.analysis is not None:
+            info.recommendation = build_recommendation(
+                saved.joint_type,
+                info.analysis,
+                intent=project.assembly_intent,
+                clearance_mm=printer.clearance_mm,
+            )
+            if saved.params:
+                info.recommendation.params = {
+                    **(info.recommendation.params or {}),
+                    **saved.params,
+                }
+        cuts.append(info)
+
+    plan = plan_from_cuts(
+        project.mesh,
+        printer,
+        cuts,
+        orientation_name="projekt",
+        assembly_intent=project.assembly_intent,
+    )
+    result = cut_mesh(project.mesh, plan, joints=True, printer=printer)
+    print(f"\nKapade i {len(result.parts)} delar.")
+    for warning in result.warnings:
+        print(f"VARNING: {warning}")
+
+    export = exporter.export_parts(
+        result,
+        out,
+        printer,
+        source=Path(project.source) if project.source else args.file,
+        file_format=args.format,
+        lay_flat=project.lay_flat,
+        split_bodies=project.split_bodies,
+    )
+    print(f"Skrev {len(export.part_files)} filer till {export.directory}")
+    print(f"Rapport: {export.report_file}")
+    return 0
+
+
 def _cmd_analyze_spans(args: argparse.Namespace) -> int:
     info = mesh_io.load_mesh(args.model)
     print(info.summary())
@@ -769,6 +871,8 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_export(args)
         if args.command == "profile":
             return _cmd_profile(args)
+        if args.command == "project":
+            return _cmd_project(args)
         if args.command == "analyze-spans":
             return _cmd_analyze_spans(args)
         if args.command == "printers":

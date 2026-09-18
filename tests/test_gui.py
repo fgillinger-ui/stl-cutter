@@ -2200,3 +2200,68 @@ def test_a_cancelled_profile_dialog_writes_nothing(qapp, window, model_file, tmp
     window.save_slicer_profile()
 
     assert not list(tmp_path.glob("*.json"))
+
+
+# --------------------------------------------------------------------------
+# Projekt
+# --------------------------------------------------------------------------
+
+
+def test_saving_a_project_needs_a_model(window):
+    assert not window.save_project_action.isEnabled()
+
+
+def test_a_project_round_trips_through_the_window(qapp, window, model_file, tmp_path):
+    """Hela vitsen: stäng ned och ta upp igen, och allt står kvar."""
+    from stl_cutter.core import project as project_core
+
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+    window.demount_radio.setChecked(True)
+    window.load_check.setChecked(True)
+    window.load_weight.setValue(7.0)
+    window.start_analysis()
+    wait_for_worker(qapp, window)
+    positions = [c.plane.position for c in window.plan.cuts]
+    joints = [c.recommendation.joint_type for c in window.plan.cuts]
+
+    path = project_core.save_project(window.current_project(), tmp_path / "jobb")
+
+    # Ett nytt fönster, som om programmet startats om.
+    fresh = MainWindow(Settings())
+    try:
+        fresh.load_project(path)
+
+        assert fresh.plan is not None, "inga snitt kom tillbaka"
+        assert [c.plane.position for c in fresh.plan.cuts] == pytest.approx(positions)
+        assert [c.recommendation.joint_type for c in fresh.plan.cuts] == joints
+        assert fresh.demount_radio.isChecked()
+        assert fresh.load_check.isChecked()
+        assert fresh.load_weight.value() == pytest.approx(7.0)
+        assert fresh.cut_table.rowCount() == len(positions)
+    finally:
+        fresh.close()
+
+
+def test_a_resized_model_is_what_the_project_keeps(qapp, window, model_file, tmp_path):
+    """Modellen i projektet ska vara den man arbetat med, inte filen på disk."""
+    from stl_cutter.core import project as project_core
+
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+    before = window.mesh_info.mesh.extents[1]
+    window.target_y.setValue(float(before) + 40.0)
+    window.start_resize()
+    wait_for_worker(qapp, window)
+
+    path = project_core.save_project(window.current_project(), tmp_path / "ändrad")
+    back = project_core.load_project(path)
+
+    assert back.mesh.extents[1] == pytest.approx(float(before) + 40.0, abs=0.5)
+
+
+def test_opening_something_that_is_not_a_project_says_so(qapp, window, model_file):
+    window.load_project(model_file)
+
+    assert window.mesh_info is None
+    assert "inget projekt" in window.status_box.toPlainText()

@@ -256,6 +256,29 @@ som rör hållfasthet och ärver resten därifrån. Se
 > och den rangordningen beror bara på upphängning och spännvidd. Ska lasten
 > vara stor: provbelasta, med marginal.
 
+### Spara arbetet och fortsätta senare
+
+Ett riktigt jobb blir sällan klart på en gång: måtten ändras, snitten flyttas,
+fogtypen byts. **Arkiv → Spara projekt…** lägger allt i en fil — modellen,
+skrivaren, monteringsvalet, lasten, varje snitt med sin fogtyp och sina
+inställningar. **Arkiv → Öppna projekt…** tar upp det precis som det var.
+
+Modellen ligger **med i filen**. Det är avsiktligt: en måttändrad modell finns
+inte någon annanstans, och originalet kan flyttas eller ändras i CAD. Filen
+(`.stlcut`) blir därmed ungefär lika stor som modellen — den är en vanlig zip
+med `project.json` och `model.stl` i, så den går att titta i för hand om något
+ser konstigt ut.
+
+Ett sparat projekt går också att köra om från kommandoraden, utan att klicka:
+
+```bash
+stl-cutter project hylla.stlcut            # kapar och exporterar som sparat
+stl-cutter project hylla.stlcut --info     # visar bara vad projektet innehåller
+```
+
+Snitten läggs exakt där de sparades — ingen omplanering. Samma projekt ger
+samma delar.
+
 Behöver modellen inte delas — den får plats som den är, eller ska tillbaka in
 i CAD — skriver `export` ut den utan att kapa:
 

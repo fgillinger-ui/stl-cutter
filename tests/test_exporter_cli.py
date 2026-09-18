@@ -557,3 +557,47 @@ def test_the_cli_profile_needs_a_base(tmp_path, capsys):
 
     assert code == 2
     assert "rullgardin" in capsys.readouterr().err
+
+
+def test_the_cli_runs_a_saved_project(tmp_path, big_box, capsys):
+    """Samma projekt ska ge samma delar, utan att någon klickar."""
+    from stl_cutter.core import project as project_core
+    from stl_cutter.core.printers import get_printer
+
+    saved = project_core.save_project(
+        project_core.Project(
+            mesh=big_box,
+            printer=get_printer("Bambu P1S"),
+            source=str(tmp_path / "modell.stl"),
+            assembly_intent="demountable",
+            cuts=[project_core.ProjectCut(axis=0, position_mm=0.0, joint_type="dovetail")],
+            output_dir=str(tmp_path / "ut"),
+        ),
+        tmp_path / "jobb",
+    )
+
+    assert main(["project", str(saved)]) == 0
+
+    written = sorted((tmp_path / "ut").glob("part_*.stl"))
+    assert len(written) == 2
+    out = capsys.readouterr().out
+    assert "dovetail" in out and "Kapade i 2 delar" in out
+
+
+def test_the_cli_can_just_show_the_project(tmp_path, big_box, capsys):
+    from stl_cutter.core import project as project_core
+    from stl_cutter.core.printers import get_printer
+
+    saved = project_core.save_project(
+        project_core.Project(mesh=big_box, printer=get_printer("Bambu P1S")),
+        tmp_path / "jobb",
+    )
+
+    assert main(["project", str(saved), "--info"]) == 0
+
+    assert not list(tmp_path.glob("part_*.stl")), "--info får inte skriva några delar"
+
+
+def test_a_broken_project_is_a_friendly_error(tmp_path, capsys):
+    assert main(["project", str(tmp_path / "finns-inte.stlcut")]) == 2
+    assert "Hittar ingen" in capsys.readouterr().err
