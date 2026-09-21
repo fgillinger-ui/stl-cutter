@@ -21,6 +21,9 @@ def main(argv: list[str] | None = None) -> int:
     window = MainWindow(Settings.load())
     window.status(f"Full logg skrivs till {path}")
     window.show()
+    # Först när fönstret syns: att öppna en modell tar tid, och den tiden ska
+    # användaren se pågå, inte vänta på framför en tom skärm.
+    window.reopen_last_model()
     return app.exec()
 
 

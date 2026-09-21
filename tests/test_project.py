@@ -204,3 +204,57 @@ def test_the_description_says_what_is_in_it(tmp_path):
     assert "Flashforge" in text
     assert "dovetail" in text
     assert "Last:" in text
+
+
+# --------------------------------------------------------------------------
+# Delarnas namn och färger
+# --------------------------------------------------------------------------
+
+
+def test_part_names_and_colours_survive_a_roundtrip(tmp_path, small_box, printer):
+    from stl_cutter.core.project import Project, load_project, save_project
+
+    project = Project(
+        mesh=small_box,
+        printer=printer,
+        part_names={1: "vänster gavel", 2: "hyllplan"},
+        part_colours={1: "#123456"},
+    )
+    path = save_project(project, tmp_path / "hylla.stlcut")
+
+    back = load_project(path)
+
+    # Indexen är tal igen, inte JSON-strängar.
+    assert back.part_names == {1: "vänster gavel", 2: "hyllplan"}
+    assert back.part_colours == {1: "#123456"}
+
+
+def test_a_project_without_names_opens_as_before(tmp_path, small_box, printer):
+    """En fil sparad före den här funktionen ska fortfarande gå att öppna."""
+    import json
+    import zipfile
+
+    from stl_cutter.core.project import Project, load_project, save_project
+
+    path = save_project(Project(mesh=small_box, printer=printer), tmp_path / "gammal.stlcut")
+    # Skriv om filen utan de nya fälten, som en äldre version hade gjort.
+    with zipfile.ZipFile(path) as archive:
+        settings = json.loads(archive.read("project.json").decode("utf-8"))
+        model = archive.read("model.stl")
+    settings.pop("part_names", None)
+    settings.pop("part_colours", None)
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("project.json", json.dumps(settings))
+        archive.writestr("model.stl", model)
+
+    back = load_project(path)
+
+    assert back.part_names == {}
+    assert back.part_colours == {}
+
+
+def test_unreadable_part_indices_are_skipped_not_fatal(tmp_path, small_box, printer):
+    from stl_cutter.core.project import _by_index
+
+    assert _by_index({"1": "a", "x": "b", None: "c"}) == {1: "a"}
+    assert _by_index(None) == {}

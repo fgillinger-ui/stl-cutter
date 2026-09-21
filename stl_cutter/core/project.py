@@ -120,6 +120,10 @@ class Project:
     output_dir: str = ""
     base_profile: str = ""
     saved: str = ""
+    #: Egna namn på delarna, per delindex. Namnet blir filnamnet vid export.
+    part_names: dict[int, str] = field(default_factory=dict)
+    #: Egna färger på delarna i 3D-vyn, per delindex, som "#RRGGBB".
+    part_colours: dict[int, str] = field(default_factory=dict)
     #: Fritext från användaren. Tomt så länge inget skrivits.
     note: str = ""
 
@@ -140,6 +144,10 @@ class Project:
                 "output_dir": self.output_dir,
             },
             "base_profile": self.base_profile,
+            # Nycklarna blir strängar i JSON och görs om till heltal vid
+            # inläsning - ett delindex är ett nummer, inte en text.
+            "part_names": {str(k): v for k, v in self.part_names.items()},
+            "part_colours": {str(k): v for k, v in self.part_colours.items()},
         }
 
     def describe(self) -> str:
@@ -252,5 +260,18 @@ def load_project(path: str | Path) -> Project:
         output_dir=str(export.get("output_dir", "")),
         base_profile=str(settings.get("base_profile", "")),
         saved=str(settings.get("saved", "")),
+        part_names=_by_index(settings.get("part_names")),
+        part_colours=_by_index(settings.get("part_colours")),
         note=str(settings.get("note", "")),
     )
+
+
+def _by_index(raw) -> dict[int, str]:
+    """{"2": "gavel"} -> {2: "gavel"}. Skräp hoppas över, inte kastar fel."""
+    out: dict[int, str] = {}
+    for key, value in (raw or {}).items():
+        try:
+            out[int(key)] = str(value)
+        except (TypeError, ValueError):
+            log.debug("Hoppar över delnamn med oläsbart index: %r", key)
+    return out

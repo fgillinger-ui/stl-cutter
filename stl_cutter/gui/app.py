@@ -15,12 +15,14 @@ from pathlib import Path
 import numpy as np
 import trimesh
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction
+from PySide6.QtGui import QAction, QColor
 from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
     QComboBox,
+    QDialog,
     QDoubleSpinBox,
+    QColorDialog,
     QFileDialog,
     QGroupBox,
     QHBoxLayout,
@@ -38,6 +40,7 @@ from PySide6.QtWidgets import (
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -65,9 +68,10 @@ from ..core.recommender import (
 )
 from . import joint_images
 from .joint_help import JointHelpDialog
+from .profile_dialog import ProfileChoice, ProfileDialog
 from .paths import log_file
 from .settings import Settings
-from .view3d import ModelView
+from .view3d import DEFAULT_JOINT_COLOUR, ModelView, colour_rgba, part_colors
 from .workers import Worker
 
 log = logging.getLogger(__name__)
@@ -109,6 +113,8 @@ TILT_DEGREES_PER_PIXEL = 0.35
 #: Kolumner i snittabellen.
 COLUMN_INDEX, COLUMN_AXIS, COLUMN_POSITION, COLUMN_JOINT, COLUMN_MOTIVATION = range(5)
 
+PART_COLUMN_INDEX, PART_COLUMN_NAME, PART_COLUMN_COLOUR, PART_COLUMN_SIZE = range(4)
+
 
 class MainWindow(QMainWindow):
     def __init__(self, settings: Settings | None = None):
@@ -126,6 +132,9 @@ class MainWindow(QMainWindow):
         self.worker: Worker | None = None
         #: Sant medan tabellen ritas om, så att signaler inte studsar tillbaka.
         self._filling = False
+        #: Egna namn och färger per delindex. Namnet blir filnamnet vid export.
+        self.part_names: dict[int, str] = {}
+        self.part_colours: dict[int, tuple[float, float, float, float]] = {}
 
         self.setWindowTitle(WINDOW_TITLE)
         self.setAcceptDrops(True)
@@ -144,25 +153,30 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _build_ui(self) -> None:
+        """Vänsterpanelen som flikar, ett steg per flik.
+
+        Allt låg förut i en enda lång kolumn med rullningslist: knappen man
+        skulle trycka på låg lika gärna utanför fönstret som i det. Flikarna
+        gör varje steg till en egen ruta som får plats i sin helhet, och
+        ordningen står kvar i namnen.
+        """
         splitter = QSplitter(Qt.Horizontal)
 
-        panel = QWidget()
-        layout = QVBoxLayout(panel)
-        layout.setSpacing(6)
-        layout.addWidget(self._section_model())
-        layout.addWidget(self._section_resize())
-        layout.addWidget(self._section_printer())
-        layout.addWidget(self._section_assembly())
-        layout.addWidget(self._section_load())
-        layout.addWidget(self._section_suggestions())
-        layout.addWidget(self._section_export())
-        layout.addStretch(1)
-
-        scroll = QScrollArea()
-        scroll.setWidget(panel)
-        scroll.setWidgetResizable(True)
-        scroll.setMinimumWidth(470)
-        splitter.addWidget(scroll)
+        self.steps = QTabWidget()
+        self.steps.setDocumentMode(True)
+        self.steps.setMinimumWidth(470)
+        for label, sections in (
+            ("1. Modell", [self._section_model(), self._section_resize()]),
+            (
+                "2. Skrivare",
+                [self._section_printer(), self._section_assembly(), self._section_load()],
+            ),
+            ("3. Snitt", [self._section_suggestions()]),
+            ("4. Delar", [self._section_parts()]),
+            ("5. Exportera", [self._section_export()]),
+        ):
+            self.steps.addTab(self._step_page(sections), label)
+        splitter.addWidget(self.steps)
 
         splitter.addWidget(self._right_side())
         splitter.setStretchFactor(1, 1)
@@ -171,6 +185,27 @@ class MainWindow(QMainWindow):
 
         self._build_statusbar()
         self._build_menu()
+
+    @staticmethod
+    def _step_page(sections: list) -> QWidget:
+        """En flik: rutorna staplade, med rullning kvar som säkerhetsnät.
+
+        På en liten skärm kan även en enskild flik bli för hög. Då är en
+        rullningslist bättre än avklippta knappar - men i normalfallet syns
+        hela fliken utan att någon behöver rulla.
+        """
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setSpacing(6)
+        for section in sections:
+            layout.addWidget(section)
+        layout.addStretch(1)
+
+        scroll = QScrollArea()
+        scroll.setWidget(page)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.NoFrame)
+        return scroll
 
     def _section_model(self) -> QGroupBox:
         box = QGroupBox("1. Modell")
@@ -188,7 +223,19 @@ class MainWindow(QMainWindow):
         self.model_label = QLabel("Ingen modell öppnad.")
         self.model_label.setWordWrap(True)
         layout.addWidget(self.model_label)
+
+        self.reopen_check = QCheckBox("Öppna den senaste modellen vid start")
+        self.reopen_check.setToolTip(
+            "Samma arbete tar ofta flera kvällar. Med det här kryssat öppnas\n"
+            "modellen du höll på med direkt, i stället för att du får leta upp\n"
+            "den varje gång."
+        )
+        self.reopen_check.stateChanged.connect(self._on_reopen_changed)
+        layout.addWidget(self.reopen_check)
         return box
+
+    def _on_reopen_changed(self, *_args) -> None:
+        self.settings.reopen_last_model = self.reopen_check.isChecked()
 
     def _section_resize(self) -> QGroupBox:
         """1b. Ändra mått - sker alltid före snittplaneringen."""
@@ -594,6 +641,48 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.cut_button)
         return box
 
+    def _section_parts(self) -> QGroupBox:
+        """Delarna: namn på filerna och färg i vyn."""
+        box = QGroupBox("4b. Delar")
+        layout = QVBoxLayout(box)
+
+        hint = QLabel(
+            "Förhandsgranska eller kapa först. Namnet blir filnamnet vid export, "
+            "färgen gäller 3D-vyn."
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: gray;")
+        layout.addWidget(hint)
+
+        self.part_table = QTableWidget(0, 4)
+        self.part_table.setHorizontalHeaderLabels(["Del", "Namn", "Färg", "Mått"])
+        self.part_table.verticalHeader().setVisible(False)
+        self.part_table.horizontalHeader().setSectionResizeMode(
+            PART_COLUMN_NAME, QHeaderView.Stretch
+        )
+        self.part_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.part_table.setMinimumHeight(140)
+        self.part_table.itemChanged.connect(self._on_part_name_changed)
+        layout.addWidget(self.part_table)
+
+        buttons = QHBoxLayout()
+        self.reset_colours_button = QPushButton("Återställ färgerna")
+        self.reset_colours_button.setToolTip(
+            "Gå tillbaka till programmets egna färger för alla delar"
+        )
+        self.reset_colours_button.clicked.connect(self.reset_part_colours)
+        buttons.addWidget(self.reset_colours_button)
+
+        self.joint_colour_button = QPushButton("Fogens färg…")
+        self.joint_colour_button.setToolTip(
+            "Färgen på de ytor som ska mötas. Den ritas ovanpå delens egen färg."
+        )
+        self.joint_colour_button.clicked.connect(self.choose_joint_colour)
+        buttons.addWidget(self.joint_colour_button)
+        buttons.addStretch(1)
+        layout.addLayout(buttons)
+        return box
+
     def _right_side(self) -> QWidget:
         container = QWidget()
         layout = QVBoxLayout(container)
@@ -727,6 +816,23 @@ class MainWindow(QMainWindow):
         self.explode_slider.setValue(int(self.settings.explode_mm))
         if self.settings.last_output_dir:
             self.output_label.setText(self.settings.last_output_dir)
+        self.reopen_check.setChecked(self.settings.reopen_last_model)
+
+    def reopen_last_model(self) -> None:
+        """Öppna modellen som var igång sist.
+
+        Ett arbete tar flera kvällar, och att leta upp samma fil varje gång är
+        ren friktion. Är filen borta - flyttad, på en urkopplad disk - sägs det
+        rakt ut i stället för att programmet stannar på ett felmeddelande.
+        """
+        if not self.settings.reopen_last_model or not self.settings.last_model:
+            return
+        path = Path(self.settings.last_model)
+        if not path.exists():
+            self.status(f"Den senaste modellen {path.name} finns inte kvar.")
+            return
+        self.status(f"Öppnar den senaste modellen: {path.name}")
+        self.load_model(path)
 
     def _on_printer_fields_changed(self, *_args) -> None:
         self._update_summary()
@@ -871,12 +977,16 @@ class MainWindow(QMainWindow):
 
         self._start(work, self._on_model_loaded, f"Öppnar {path.name}…")
         self.settings.last_open_dir = str(path.parent)
+        self.settings.last_model = str(path)
 
     def _on_model_loaded(self, info) -> None:
         self.mesh_info = info
         self._rebuild_parts()
         self.plan = None
         self.result = None
+        self.part_names.clear()
+        self.part_colours.clear()
+        self.part_table.setRowCount(0)
         self.cut_table.setRowCount(0)
         self.cut_button.setEnabled(False)
         self.preview_button.setEnabled(False)
@@ -1435,6 +1545,12 @@ class MainWindow(QMainWindow):
             split_bodies=self.split_bodies_check.isChecked(),
             output_dir=self.settings.last_output_dir,
             base_profile=self.settings.base_profile,
+            part_names=dict(self.part_names),
+            part_colours={
+                index: "#%02X%02X%02X"
+                % tuple(int(round(255 * v)) for v in colour[:3])
+                for index, colour in self.part_colours.items()
+            },
         )
 
     def save_project(self) -> None:
@@ -1542,6 +1658,13 @@ class MainWindow(QMainWindow):
         if project.base_profile:
             self.settings.base_profile = project.base_profile
 
+        self.part_names = dict(project.part_names)
+        self.part_colours = {
+            index: colour_rgba(value, fallback=(0.5, 0.6, 0.7, 1.0))
+            for index, value in project.part_colours.items()
+        }
+        self.part_table.setRowCount(0)
+
         for button in (
             self.analyse_button,
             self.add_cut_button,
@@ -1629,15 +1752,28 @@ class MainWindow(QMainWindow):
             self.status("Kryssa i Belastning och ange vikten först.", error=True)
             return
 
-        base, ok = QInputDialog.getText(
+        dialog = ProfileDialog(
             self,
-            "Vilken profil ska den bygga på?",
-            "Namnet på processprofilen i slicern, precis som det står där:",
-            text=self.settings.base_profile,
+            ProfileChoice(
+                base_profile=self.settings.base_profile,
+                filament_profile=self.settings.filament_profile,
+                filament_temp_c=self.settings.filament_temp_c,
+            ),
         )
-        if not ok or not base.strip():
+        if dialog.exec() != QDialog.Accepted:
             return
-        self.settings.base_profile = base.strip()
+        choice = dialog.choice()
+        if not choice.base_profile:
+            self.status(
+                "Ingen processprofil angiven - utan den vet profilen ingenting "
+                "om din skrivare.",
+                error=True,
+            )
+            return
+
+        self.settings.base_profile = choice.base_profile
+        self.settings.filament_profile = choice.filament_profile
+        self.settings.filament_temp_c = choice.filament_temp_c
 
         directory = QFileDialog.getExistingDirectory(
             self,
@@ -1649,7 +1785,12 @@ class MainWindow(QMainWindow):
 
         try:
             bundle = profile_core.write_profiles(
-                case, directory, base_profile=base, name="Bärande delar"
+                case,
+                directory,
+                base_profile=choice.base_profile,
+                name="Bärande delar",
+                filament_base=choice.filament_profile,
+                normal_temp_c=choice.filament_temp_c,
             )
         except profile_core.ProfileError as error:
             self.status(str(error), error=True)
@@ -2242,7 +2383,13 @@ class MainWindow(QMainWindow):
         self.result = result
         self._report_result(result)
         self.status("Förhandsgranskning - inga filer har skrivits.")
-        self.view.show_parts(result.parts, planes=result.plan.planes)
+        self._fill_part_table(result)
+        self.view.show_parts(
+            result.parts,
+            planes=result.plan.planes,
+            colours=self.current_part_colours(result),
+            joint_colour=colour_rgba(self.settings.joint_colour),
+        )
         # Planen ligger kvar ovanpå delarna, så man kan justera och titta igen.
         self.view.show_planes(self.plan.planes, self.plan.bounds)
         if self.explode_slider.value() == 0:
@@ -2295,6 +2442,122 @@ class MainWindow(QMainWindow):
         else:
             self.plan_summary.setStyleSheet("color: #363;")
         self.plan_summary.setText(text)
+
+    # ------------------------------------------------------------------
+    # Delarnas namn och färger
+    # ------------------------------------------------------------------
+
+    def _fill_part_table(self, result) -> None:
+        """Rita om deltabellen efter en förhandsgranskning eller kapning."""
+        colours = self.current_part_colours(result)
+        self._filling = True
+        try:
+            self.part_table.setRowCount(len(result.parts))
+            for row, part in enumerate(result.parts):
+                number = QTableWidgetItem(f"{part.index:02d}")
+                number.setFlags(Qt.ItemIsEnabled)
+                self.part_table.setItem(row, PART_COLUMN_INDEX, number)
+
+                name = QTableWidgetItem(self.part_names.get(part.index, ""))
+                name.setData(Qt.UserRole, part.index)
+                name.setToolTip(
+                    f"Tomt namn ger filen part_{part.index:02d}. "
+                    "Tecken som inte går i ett filnamn byts mot _."
+                )
+                self.part_table.setItem(row, PART_COLUMN_NAME, name)
+
+                button = QPushButton()
+                button.setToolTip("Välj färg på den här delen i 3D-vyn")
+                button.clicked.connect(partial(self.choose_part_colour, part.index))
+                self._paint_button(button, colours[row])
+                self.part_table.setCellWidget(row, PART_COLUMN_COLOUR, button)
+
+                x, y, z = part.extents_mm
+                size = QTableWidgetItem(f"{x:.0f} × {y:.0f} × {z:.0f} mm")
+                size.setFlags(Qt.ItemIsEnabled)
+                self.part_table.setItem(row, PART_COLUMN_SIZE, size)
+        finally:
+            self._filling = False
+        self.part_table.resizeColumnsToContents()
+        self.part_table.horizontalHeader().setSectionResizeMode(
+            PART_COLUMN_NAME, QHeaderView.Stretch
+        )
+
+    @staticmethod
+    def _paint_button(button, colour) -> None:
+        """Låt knappen visa färgen den sätter."""
+        red, green, blue = (int(round(255 * v)) for v in colour[:3])
+        button.setStyleSheet(
+            f"background-color: rgb({red}, {green}, {blue}); border: 1px solid #888;"
+        )
+        button.setText(f"#{red:02X}{green:02X}{blue:02X}")
+
+    def current_part_colours(self, result) -> list:
+        """Färgen varje del ska ritas i: egen om vald, annars programmets."""
+        default = part_colors(len(result.parts))
+        return [
+            self.part_colours.get(part.index, default[row])
+            for row, part in enumerate(result.parts)
+        ]
+
+    def _on_part_name_changed(self, item) -> None:
+        """Spara ett eget namn på en del."""
+        if self._filling or item.column() != PART_COLUMN_NAME:
+            return
+        index = item.data(Qt.UserRole)
+        if index is None:
+            return
+        name = item.text().strip()
+        if name:
+            self.part_names[int(index)] = name
+        else:
+            self.part_names.pop(int(index), None)
+        filename = exporter.safe_name(name, f"part_{int(index):02d}")
+        self.status(f"Del {int(index):02d} exporteras som {filename}.stl")
+
+    def choose_part_colour(self, index: int) -> None:
+        """Låt användaren välja färg på en del."""
+        current = self.part_colours.get(int(index))
+        initial = QColor.fromRgbF(*current[:3]) if current else QColor("#7f9ecb")
+        chosen = QColorDialog.getColor(initial, self, f"Färg på del {int(index):02d}")
+        if not chosen.isValid():
+            return
+        self.part_colours[int(index)] = (
+            chosen.redF(),
+            chosen.greenF(),
+            chosen.blueF(),
+            1.0,
+        )
+        self._repaint_parts()
+
+    def choose_joint_colour(self) -> None:
+        """Färgen på de ytor som ska mötas."""
+        current = self.settings.joint_colour or DEFAULT_JOINT_COLOUR
+        chosen = QColorDialog.getColor(QColor(current), self, "Fogens färg")
+        if not chosen.isValid():
+            return
+        self.settings.joint_colour = chosen.name()
+        self._repaint_parts()
+
+    def reset_part_colours(self) -> None:
+        """Tillbaka till programmets egna färger."""
+        self.part_colours.clear()
+        self.settings.joint_colour = DEFAULT_JOINT_COLOUR
+        self._repaint_parts()
+        self.status("Färgerna återställda.")
+
+    def _repaint_parts(self) -> None:
+        """Rita om delarna med de färger som gäller nu."""
+        if self.result is None:
+            return
+        self.view.show_parts(
+            self.result.parts,
+            planes=self.result.plan.planes,
+            colours=self.current_part_colours(self.result),
+            joint_colour=colour_rgba(self.settings.joint_colour),
+        )
+        self._fill_part_table(self.result)
+        self.on_bed_toggled()
 
     def export_model(self) -> None:
         """Skriv modellen som den är just nu, utan att kapa den.
@@ -2367,6 +2630,7 @@ class MainWindow(QMainWindow):
         ready = self.result
         lay_flat = self.lay_flat_check.isChecked()
         split_bodies = self.split_bodies_check.isChecked()
+        names = dict(self.part_names)
 
         def work(progress=None):
             # Har vi redan förhandsgranskat samma plan behöver vi inte kapa igen.
@@ -2383,6 +2647,7 @@ class MainWindow(QMainWindow):
                 source=source,
                 lay_flat=lay_flat,
                 split_bodies=split_bodies,
+                names=names,
             )
             return result, export
 
@@ -2396,7 +2661,13 @@ class MainWindow(QMainWindow):
         self._summarise_result(result)
         self.status(f"Skrev {len(export.part_files)} filer till {export.directory}")
         self.status(f"Rapport: {export.report_file.name}")
-        self.view.show_parts(result.parts, planes=result.plan.planes)
+        self._fill_part_table(result)
+        self.view.show_parts(
+            result.parts,
+            planes=result.plan.planes,
+            colours=self.current_part_colours(result),
+            joint_colour=colour_rgba(self.settings.joint_colour),
+        )
         self.on_bed_toggled()
 
     # ------------------------------------------------------------------

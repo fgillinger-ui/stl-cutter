@@ -140,6 +140,18 @@ Slicern säger inte vad som är fel, så här är vad den faktiskt kontrollerar
 Filen skrivs exakt som slicern själv skriver sina användarprofiler. Går
 importen ändå tomt är det punkt 3 eller 4 som gäller.
 
+### Om importen inte går alls
+
+Bredvid profilerna skrivs **`… - inställningar.txt`**: samma värden som en
+läslig lista, med vad de heter i slicerns eget gränssnitt. Den är där för att
+importen kan misslyckas av skäl programmet inte kan se — en avknoppning av
+OrcaSlicer kan ha ändrat vad den godtar, och basprofilens namn måste finnas i
+just den installationen. Listan är sex till tio värden. Att skriva in dem för
+hand tar en minut, och då spelar det ingen roll om filen gick in.
+
+Filen säger också vilket `inherits`-namn profilen bygger på, så att det går att
+jämföra tecken för tecken mot rullgardinen — mellanslag och `@`-suffix räknas.
+
 ## Marginal
 
 Ska lasten vara stor: provbelasta, med marginal, innan något dyrt ställs på

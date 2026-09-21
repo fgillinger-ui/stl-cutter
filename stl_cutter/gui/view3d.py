@@ -43,6 +43,25 @@ PART_VALUE = 1.0
 #: enfärgad del. Samma färg på båda delarna: det är ytorna som ska mötas.
 JOINT_COLOR = (1.0, 0.45, 0.10, 1.0)
 
+#: Samma färg som text, för inställningsfilen och färgväljaren.
+DEFAULT_JOINT_COLOUR = "#FF731A"
+
+
+def colour_rgba(value, fallback=JOINT_COLOR) -> tuple[float, float, float, float]:
+    """"#RRGGBB" till (r, g, b, a) i 0-1. Ogiltigt värde ger `fallback`.
+
+    Färgen kommer från inställningsfilen, som en användare kan ha redigerat
+    för hand. En felstavad färg ska ge programmets egen, inte ett fel.
+    """
+    text = str(value or "").strip().lstrip("#")
+    if len(text) != 6:
+        return tuple(fallback)
+    try:
+        red, green, blue = (int(text[i : i + 2], 16) / 255.0 for i in (0, 2, 4))
+    except ValueError:
+        return tuple(fallback)
+    return (red, green, blue, 1.0)
+
 #: Hur långt från snittet en yta räknas som en del av fogen. Täcker med marginal
 #: det djup en laxstjärt eller styrpinne sticker in.
 JOINT_BAND_MM = 15.0
@@ -127,11 +146,12 @@ def face_colors(
     planes,
     base: tuple[float, float, float, float],
     band_mm: float = JOINT_BAND_MM,
+    highlight: tuple[float, float, float, float] = JOINT_COLOR,
 ) -> np.ndarray:
     """Delens färg per triangel, med fogen i en avvikande färg."""
     colors = np.tile(np.asarray(base, dtype=float), (len(mesh.faces), 1))
     mask = joint_face_mask(mesh, planes, band_mm)
-    colors[mask] = np.asarray(JOINT_COLOR, dtype=float)
+    colors[mask] = np.asarray(highlight, dtype=float)
     return colors
 
 
@@ -252,6 +272,20 @@ def bed_grid(printer, spacing_mm: float = 20.0):
     return size, float(spacing_mm)
 
 
+def bed_placement(bounds) -> tuple[float, float, float]:
+    """Var plattan ska ligga: mitt under det som visas.
+
+    Rutnätet ritas kring origo, men en STL-fil har sina egna koordinater och
+    kan ligga var som helst - ofta långt från origo. Plattan hamnade då bredvid
+    eller tvärs igenom modellen i stället för under den.
+    """
+    if bounds is None:
+        return 0.0, 0.0, 0.0
+    bounds = np.asarray(bounds, dtype=float)
+    centre = (bounds[0] + bounds[1]) / 2.0
+    return float(centre[0]), float(centre[1]), float(bounds[0][2])
+
+
 def mesh_data(mesh: trimesh.Trimesh, colors=None) -> gl.MeshData:
     return gl.MeshData(
         vertexes=np.asarray(mesh.vertices, dtype=float),
@@ -284,6 +318,7 @@ class ModelView(gl.GLViewWidget):
         self._part_items: list = []
         self._part_centres = np.zeros((0, 3))
         self._bed_item = None
+        self._bed_visible = False
         self._printer = None
         self._explode_mm = 0.0
         self._press_pos = None
@@ -328,6 +363,7 @@ class ModelView(gl.GLViewWidget):
             drawEdges=False,
         )
         self.addItem(self._model_item)
+        self.place_bed()
         self.frame_on(mesh.bounds)
 
     def frame_on(self, bounds) -> None:
@@ -419,7 +455,7 @@ class ModelView(gl.GLViewWidget):
     def showing_parts(self) -> bool:
         return bool(self._part_items)
 
-    def show_parts(self, parts, planes=None) -> None:
+    def show_parts(self, parts, planes=None, colours=None, joint_colour=None) -> None:
         """Visa de kapade delarna i olika färger och dölj originalmodellen.
 
         Fogarna målas i en egen färg, annars försvinner de i delens egen: det
@@ -432,11 +468,14 @@ class ModelView(gl.GLViewWidget):
         if self._model_item is not None:
             self._model_item.setVisible(False)
 
-        colors = part_colors(len(parts))
+        colors = list(colours) if colours else part_colors(len(parts))
+        highlight = tuple(joint_colour) if joint_colour else JOINT_COLOR
         centres = []
         for part, color in zip(parts, colors):
             mesh = getattr(part, "mesh", part)
-            painted = face_colors(mesh, planes, color) if planes else None
+            painted = (
+                face_colors(mesh, planes, color, highlight=highlight) if planes else None
+            )
             item = gl.GLMeshItem(
                 meshdata=mesh_data(mesh, painted),
                 smooth=False,
@@ -449,6 +488,7 @@ class ModelView(gl.GLViewWidget):
 
         self._part_centres = np.array(centres, dtype=float) if centres else np.zeros((0, 3))
         self.set_explode(self._explode_mm)
+        self.place_bed()
 
     def clear_parts(self) -> None:
         for item in self._part_items:
@@ -467,11 +507,13 @@ class ModelView(gl.GLViewWidget):
         for item, offset in zip(self._part_items, offsets):
             item.resetTransform()
             item.translate(*offset)
+        self.place_bed()
 
     # -- byggplattan ------------------------------------------------------
 
     def set_bed(self, printer, visible: bool) -> None:
         self._printer = printer
+        self._bed_visible = bool(visible)
         if self._bed_item is not None:
             self.removeItem(self._bed_item)
             self._bed_item = None
@@ -484,6 +526,15 @@ class ModelView(gl.GLViewWidget):
         grid.setColor(tuple(int(c * 255) for c in self.bed_color))
         self._bed_item = grid
         self.addItem(grid)
+        self.place_bed()
+
+    def place_bed(self) -> None:
+        """Lägg plattan mitt under det som visas."""
+        if self._bed_item is None:
+            return
+        x, y, z = bed_placement(self.content_bounds())
+        self._bed_item.resetTransform()
+        self._bed_item.translate(x, y, z)
 
     # -- att peka och ta tag i ett plan ------------------------------------
 

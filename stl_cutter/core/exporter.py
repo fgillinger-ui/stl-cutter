@@ -47,6 +47,27 @@ def build_report(
     return report
 
 
+#: Tecken som inte kan stå i ett filnamn, eller som gör det svårt att hantera
+#: i en terminal. Bokstäver med accent och å, ä, ö får vara kvar.
+UNSAFE_CHARACTERS = '/\\:*?"<>|\0\n\r\t'
+
+#: Längsta egna namn som används. Längre klipps - filsystem har gränser.
+MAX_NAME_LENGTH = 60
+
+
+def safe_name(name: str | None, fallback: str) -> str:
+    """Ett eget delnamn omgjort till ett filnamn som går att skriva.
+
+    Namnet kommer från användaren och hamnar i en sökväg, så sökvägstecken
+    måste bort - annars skulle "hylla/vänster" skriva i en annan mapp. Ett tomt
+    namn faller tillbaka på det automatiska `part_NN`.
+    """
+    cleaned = "".join("_" if c in UNSAFE_CHARACTERS else c for c in (name or "")).strip()
+    cleaned = cleaned.strip(". ")  # leder inget vidare, och "." är ingen fil
+    cleaned = cleaned[:MAX_NAME_LENGTH].strip()
+    return cleaned or fallback
+
+
 def _bodies_of(mesh):
     """Delens sammanhängande kroppar var för sig.
 
@@ -73,6 +94,7 @@ def export_parts(
     file_format: str = "stl",
     lay_flat: bool = True,
     split_bodies: bool = True,
+    names: dict[int, str] | None = None,
 ) -> ExportResult:
     """Skriv `part_01.stl` … `part_NN.stl` samt `split_report.json`.
 
@@ -81,17 +103,29 @@ def export_parts(
 
     `split_bodies` skriver lösa kroppar i samma del som egna filer, numrerade
     `part_03a`, `part_03b` och så vidare, så att varje utskrift blir en fil.
+
+    `names` ger egna filnamn per delindex - "vänster gavel" i stället för
+    `part_02`. Namn som krockar med varandra får ett löpnummer, så att ingen
+    fil skriver över en annan.
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     part_files: list[Path] = []
+    used: set[str] = set()
     for part in result.parts:
         bodies = _bodies_of(part.mesh) if split_bodies else [part.mesh]
         for order, body in enumerate(bodies):
-            name = f"part_{part.index:02d}"
+            name = safe_name((names or {}).get(part.index), f"part_{part.index:02d}")
             if len(bodies) > 1:
                 name += chr(ord("a") + order)
+            # Två delar som fått samma namn får inte skriva över varandra.
+            unique, serial = name, 2
+            while unique.lower() in used:
+                unique = f"{name}_{serial}"
+                serial += 1
+            name = unique
+            used.add(name.lower())
             if lay_flat:
                 body, height = orient_core.lay_flat(body)
                 log.info("%s: %s", name, orient_core.describe_orientation(part.mesh, body))

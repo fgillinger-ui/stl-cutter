@@ -62,6 +62,7 @@ __all__ = [
     "ProfileBundle",
     "process_profile",
     "filament_profile",
+    "settings_text",
     "write_profiles",
 ]
 
@@ -200,6 +201,73 @@ def filament_profile(
     }
 
 
+#: Vad inställningarna heter i slicerns eget gränssnitt. Nyckeln i profilen
+#: står i parentes, så att den går att söka på om språket är ett annat.
+UI_LABELS = {
+    "wall_loops": "Väggar / Wall loops",
+    "top_shell_layers": "Topplager / Top shell layers",
+    "bottom_shell_layers": "Bottenlager / Bottom shell layers",
+    "sparse_infill_density": "Fyllnadsgrad / Sparse infill density",
+    "sparse_infill_pattern": "Fyllnadsmönster / Sparse infill pattern",
+    "layer_height": "Lagerhöjd / Layer height",
+    "nozzle_temperature": "Munstyckstemperatur / Nozzle temperature",
+    "nozzle_temperature_initial_layer": "Munstycke, första lagret",
+    "fan_max_speed": "Fläkt max / Fan max speed",
+    "fan_min_speed": "Fläkt min / Fan min speed",
+}
+
+#: Fälten som är profilens rubrik, inte en inställning att skriva in.
+HEADER_KEYS = ("version", "name", "from", "inherits", "print_settings_id", "filament_settings_id")
+
+
+def settings_text(process: dict, filament: dict | None = None) -> str:
+    """Inställningarna som en lista att knappa in för hand.
+
+    Importen kan misslyckas av skäl programmet inte kan se: profilnamnet i
+    `inherits` måste finnas i just den här slicern, och en avknoppning av
+    OrcaSlicer kan ha ändrat vad den godtar. Listan fungerar alltid - det är
+    sju värden, och efter det spelar det ingen roll om filen gick in eller ej.
+    """
+    lines = [
+        "Inställningar för bärande delar",
+        "=" * 34,
+        "",
+        "Så här importerar du filerna i slicern:",
+        "  Arkiv → Importera → Importera konfiguration (File → Import → Import configs)",
+        "",
+        f"Profilen bygger på: {process.get('inherits', '')!r}",
+        "Det namnet måste stå exakt så i slicerns rullgardin, annars vägrar",
+        "importen utan att säga varför. Jämför tecken för tecken - mellanslag",
+        "och @-suffix räknas.",
+        "",
+        "Går importen ändå inte: ställ in värdena själv, det är de här och",
+        "inga andra. Allt annat lämnas som du har det.",
+        "",
+        "Processinställningar:",
+    ]
+    for key, value in process.items():
+        if key in HEADER_KEYS:
+            continue
+        lines.append(f"  {UI_LABELS.get(key, key)}: {value}   ({key})")
+
+    if filament:
+        lines.append("")
+        lines.append("Filamentinställningar:")
+        for key, value in filament.items():
+            if key in HEADER_KEYS:
+                continue
+            shown = value[0] if isinstance(value, list) and value else value
+            lines.append(f"  {UI_LABELS.get(key, key)}: {shown}   ({key})")
+    else:
+        lines.append("")
+        lines.append(
+            "Ingen filamentprofil skrevs - temperatur och fläkt beror på vilket\n"
+            "filament du kör. Ange filamentprofilens namn och dess vanliga\n"
+            "temperatur i programmet, så skrivs den också."
+        )
+    return "\n".join(lines) + "\n"
+
+
 def write_profiles(
     load: LoadCase,
     out_dir: str | Path,
@@ -217,23 +285,20 @@ def write_profiles(
     files: list[Path] = []
     notes: list[str] = []
 
+    process = process_profile(load, base_profile, name, nozzle_mm)
     process_path = out_dir / f"{stem} - process.json"
     process_path.write_text(
-        json.dumps(process_profile(load, base_profile, name, nozzle_mm), indent=4, ensure_ascii=False)
-        + "\n",
+        json.dumps(process, indent=4, ensure_ascii=False) + "\n",
         encoding="utf-8",
     )
     files.append(process_path)
 
+    filament = None
     if filament_base.strip() and normal_temp_c > 0:
+        filament = filament_profile(load, filament_base, normal_temp_c, name)
         filament_path = out_dir / f"{stem} - filament.json"
         filament_path.write_text(
-            json.dumps(
-                filament_profile(load, filament_base, normal_temp_c, name),
-                indent=4,
-                ensure_ascii=False,
-            )
-            + "\n",
+            json.dumps(filament, indent=4, ensure_ascii=False) + "\n",
             encoding="utf-8",
         )
         files.append(filament_path)
@@ -245,4 +310,15 @@ def write_profiles(
             "filamentprofilens namn och dess vanliga temperatur, så skrivs "
             "den också."
         )
+
+    # Listan att knappa in för hand. Den fungerar även när importen inte gör
+    # det, och kostar ingenting att skriva.
+    text_path = out_dir / f"{stem} - inställningar.txt"
+    text_path.write_text(settings_text(process, filament), encoding="utf-8")
+    files.append(text_path)
+    notes.append(
+        f"Importen bygger på profilen {process['inherits']!r} - det namnet måste "
+        "finnas i slicern, exakt så. Går importen inte igenom står alla värden i "
+        f"{text_path.name} att skriva in för hand."
+    )
     return ProfileBundle(files=files, notes=notes)

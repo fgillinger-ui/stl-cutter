@@ -72,19 +72,43 @@ def model_file(tmp_path, big_box) -> Path:
 
 
 def test_window_starts_with_the_workflow_in_order(window):
+    """Stegen ligger som flikar, i arbetsordning."""
     from PySide6.QtWidgets import QGroupBox
 
-    titles = [box.title() for box in window.findChildren(QGroupBox)]
+    labels = [window.steps.tabText(i) for i in range(window.steps.count())]
 
-    assert titles == [
+    assert labels == [
+        "1. Modell",
+        "2. Skrivare",
+        "3. Snitt",
+        "4. Delar",
+        "5. Exportera",
+    ]
+
+    titles = {box.title() for box in window.findChildren(QGroupBox)}
+    assert titles == {
         "1. Modell",
         "1b. Ändra mått",
         "2. Skrivare",
         "3. Montering",
         "3b. Belastning",
         "4. Förslag",
+        "4b. Delar",
         "5. Kapa och exportera",
-    ]
+    }
+
+
+def test_each_step_is_its_own_tab(window):
+    """Varje flik innehåller de rutor som hör till steget."""
+    from PySide6.QtWidgets import QGroupBox
+
+    def titles_on(index):
+        page = window.steps.widget(index)
+        return [box.title() for box in page.findChildren(QGroupBox)]
+
+    assert titles_on(0) == ["1. Modell", "1b. Ändra mått"]
+    assert titles_on(1) == ["2. Skrivare", "3. Montering", "3b. Belastning"]
+    assert titles_on(3) == ["4b. Delar"]
 
 
 def test_printer_dropdown_is_filled_and_fills_the_fields(window):
@@ -2164,19 +2188,31 @@ def test_the_profile_button_needs_a_load(window):
     assert window.profile_button.isEnabled()
 
 
+def answer_profile_dialog(monkeypatch, base, filament="", temp=235.0, accept=True):
+    """Fyll i profildialogen utan att öppna den."""
+    from PySide6.QtWidgets import QDialog, QFileDialog
+
+    from stl_cutter.gui import profile_dialog
+
+    def fake_exec(self):
+        self.base_edit.setText(base)
+        self.filament_edit.setText(filament)
+        self.temp_spin.setValue(temp)
+        return QDialog.Accepted if accept else QDialog.Rejected
+
+    monkeypatch.setattr(profile_dialog.ProfileDialog, "exec", fake_exec)
+    return QFileDialog
+
+
 def test_the_gui_writes_a_slicer_profile(qapp, window, model_file, tmp_path, monkeypatch):
     import json
-
-    from PySide6.QtWidgets import QFileDialog, QInputDialog
 
     window.load_model(model_file)
     wait_for_worker(qapp, window)
     window.load_check.setChecked(True)
     window.load_weight.setValue(5.0)
 
-    monkeypatch.setattr(
-        QInputDialog, "getText", staticmethod(lambda *a, **k: ("0.20mm Standard @FF C5", True))
-    )
+    QFileDialog = answer_profile_dialog(monkeypatch, "0.20mm Standard @FF C5")
     monkeypatch.setattr(
         QFileDialog, "getExistingDirectory", staticmethod(lambda *a, **k: str(tmp_path))
     )
@@ -2190,16 +2226,91 @@ def test_the_gui_writes_a_slicer_profile(qapp, window, model_file, tmp_path, mon
 
 
 def test_a_cancelled_profile_dialog_writes_nothing(qapp, window, model_file, tmp_path, monkeypatch):
-    from PySide6.QtWidgets import QInputDialog
-
     window.load_model(model_file)
     wait_for_worker(qapp, window)
     window.load_check.setChecked(True)
 
-    monkeypatch.setattr(QInputDialog, "getText", staticmethod(lambda *a, **k: ("", False)))
+    answer_profile_dialog(monkeypatch, "0.20mm Standard @FF C5", accept=False)
     window.save_slicer_profile()
 
     assert not list(tmp_path.glob("*.json"))
+
+
+def test_the_filament_fields_write_a_filament_profile_too(
+    qapp, window, model_file, tmp_path, monkeypatch
+):
+    """Temperatur och fläkt hör till filamentet - de skrevs aldrig förut."""
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+    window.load_check.setChecked(True)
+    window.load_weight.setValue(5.0)
+
+    QFileDialog = answer_profile_dialog(
+        monkeypatch, "0.20mm Standard @FF C5", filament="Flashforge PETG @FF C5", temp=235.0
+    )
+    monkeypatch.setattr(
+        QFileDialog, "getExistingDirectory", staticmethod(lambda *a, **k: str(tmp_path))
+    )
+    window.save_slicer_profile()
+
+    assert list(tmp_path.glob("*filament.json")), "ingen filamentprofil skrevs"
+    assert window.settings.filament_profile == "Flashforge PETG @FF C5"
+    assert window.settings.filament_temp_c == pytest.approx(235.0)
+
+
+def test_the_readable_list_is_written_and_named_in_the_log(
+    qapp, window, model_file, tmp_path, monkeypatch
+):
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+    window.load_check.setChecked(True)
+    window.load_weight.setValue(5.0)
+
+    QFileDialog = answer_profile_dialog(monkeypatch, "0.20mm Standard @FF C5")
+    monkeypatch.setattr(
+        QFileDialog, "getExistingDirectory", staticmethod(lambda *a, **k: str(tmp_path))
+    )
+    window.save_slicer_profile()
+
+    assert list(tmp_path.glob("*inställningar.txt"))
+    assert "inställningar.txt" in window.status_box.toPlainText()
+
+
+def test_an_empty_process_profile_is_refused_with_a_reason(
+    qapp, window, model_file, tmp_path, monkeypatch
+):
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+    window.load_check.setChecked(True)
+
+    answer_profile_dialog(monkeypatch, "")
+    window.save_slicer_profile()
+
+    assert not list(tmp_path.glob("*.json"))
+    assert "Ingen processprofil" in window.status_box.toPlainText()
+
+
+def test_the_dialog_reads_back_what_was_typed(qapp):
+    from stl_cutter.gui.profile_dialog import ProfileChoice, ProfileDialog
+
+    dialog = ProfileDialog(choice=ProfileChoice(base_profile="bas"))
+    try:
+        assert dialog.base_edit.text() == "bas"
+        dialog.filament_edit.setText(" PETG ")
+        dialog.temp_spin.setValue(240.0)
+
+        choice = dialog.choice()
+
+        assert choice.filament_profile == "PETG"
+        assert choice.filament_temp_c == pytest.approx(240.0)
+        assert choice.has_filament
+
+        # Utan filamentnamn spelar temperaturen ingen roll - inget skrivs ändå.
+        dialog.filament_edit.setText("")
+        assert dialog.choice().filament_temp_c == 0.0
+        assert not dialog.choice().has_filament
+    finally:
+        dialog.close()
 
 
 # --------------------------------------------------------------------------
@@ -2369,3 +2480,160 @@ def test_pin_diameter_is_disabled_without_pins(qapp, window, model_file):
     window.cut_table.setCurrentCell(0, COLUMN_JOINT)
 
     assert not window.pin_spin.isEnabled()
+
+
+# --------------------------------------------------------------------------
+# Delarnas namn och färger
+# --------------------------------------------------------------------------
+
+
+def preview(qapp, window, model_file):
+    """Öppna en modell, analysera och förhandsgranska."""
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+    window.start_analysis()
+    wait_for_worker(qapp, window)
+    window.start_preview()
+    wait_for_worker(qapp, window)
+
+
+def test_the_part_table_lists_every_part(qapp, window, model_file):
+    from PySide6.QtCore import Qt
+
+    preview(qapp, window, model_file)
+
+    assert window.part_table.rowCount() == len(window.result.parts)
+    first = window.part_table.item(0, 1)
+    assert first.data(Qt.UserRole) == window.result.parts[0].index
+    assert window.part_table.cellWidget(0, 2) is not None  # färgknappen
+
+
+def test_a_named_part_is_exported_under_that_name(qapp, window, model_file, tmp_path):
+    window.settings.last_output_dir = str(tmp_path / "ut")
+    preview(qapp, window, model_file)
+
+    window.part_table.item(0, 1).setText("vänster gavel")
+    index = window.result.parts[0].index
+    assert window.part_names[index] == "vänster gavel"
+
+    window.start_cut()
+    wait_for_worker(qapp, window)
+
+    written = {p.name for p in (tmp_path / "ut").glob("*.stl")}
+    assert any(name.startswith("vänster gavel") for name in written), written
+
+
+def test_an_emptied_name_falls_back_to_part_nn(qapp, window, model_file):
+    preview(qapp, window, model_file)
+    index = window.result.parts[0].index
+
+    window.part_table.item(0, 1).setText("hylla")
+    window.part_table.item(0, 1).setText("")
+
+    assert index not in window.part_names
+
+
+def test_a_chosen_colour_reaches_the_view(qapp, window, model_file, monkeypatch):
+    from PySide6.QtGui import QColor
+    from PySide6.QtWidgets import QColorDialog
+
+    preview(qapp, window, model_file)
+    index = window.result.parts[0].index
+    monkeypatch.setattr(QColorDialog, "getColor", lambda *a, **k: QColor("#123456"))
+
+    window.choose_part_colour(index)
+
+    assert window.part_colours[index][:3] == pytest.approx(
+        (0x12 / 255, 0x34 / 255, 0x56 / 255), abs=1e-3
+    )
+    painted = window.view._part_items[0].opts["meshdata"].faceColors()
+    assert painted is not None
+    # Delens egen färg finns bland trianglarna - fogfärgen ligger ovanpå.
+    assert np.any(np.all(np.isclose(painted[:, :3], [0x12 / 255, 0x34 / 255, 0x56 / 255], atol=1e-3), axis=1))
+
+
+def test_resetting_colours_goes_back_to_the_defaults(qapp, window, model_file):
+    preview(qapp, window, model_file)
+    index = window.result.parts[0].index
+    window.part_colours[index] = (0.1, 0.2, 0.3, 1.0)
+
+    window.reset_part_colours()
+
+    assert window.part_colours == {}
+    assert window.settings.joint_colour == "#FF731A"
+
+
+def test_a_broken_colour_in_the_settings_gives_the_default():
+    from stl_cutter.gui.view3d import JOINT_COLOR, colour_rgba
+
+    assert colour_rgba("#00FF00") == pytest.approx((0.0, 1.0, 0.0, 1.0))
+    assert colour_rgba("00ff00") == pytest.approx((0.0, 1.0, 0.0, 1.0))
+    assert colour_rgba("grönt") == pytest.approx(JOINT_COLOR)
+    assert colour_rgba("") == pytest.approx(JOINT_COLOR)
+    assert colour_rgba(None) == pytest.approx(JOINT_COLOR)
+
+
+# --------------------------------------------------------------------------
+# Byggplattan och den senaste modellen
+# --------------------------------------------------------------------------
+
+
+def test_the_bed_lands_under_the_model_wherever_it_lies():
+    """En STL-fil har egna koordinater - plattan ska ändå hamna under den."""
+    from stl_cutter.gui.view3d import bed_placement
+
+    x, y, z = bed_placement(np.array([[100.0, 200.0, 50.0], [300.0, 400.0, 250.0]]))
+
+    assert (x, y) == pytest.approx((200.0, 300.0))
+    assert z == pytest.approx(50.0)
+    assert bed_placement(None) == (0.0, 0.0, 0.0)
+
+
+def test_the_bed_follows_the_model_in_the_view(qapp, window, model_file):
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+    window.bed_checkbox.setChecked(True)
+
+    bed = window.view._bed_item
+    assert bed is not None
+    placed = np.asarray(bed.transform().data(), dtype=float).reshape(4, 4).T
+    bounds = window.view.content_bounds()
+    assert placed[0][3] == pytest.approx((bounds[0][0] + bounds[1][0]) / 2.0)
+    assert placed[2][3] == pytest.approx(bounds[0][2])
+
+
+def test_the_last_model_is_remembered_and_reopened(qapp, window, model_file, tmp_path):
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+
+    assert window.settings.last_model == str(model_file)
+
+    fresh = MainWindow(settings=window.settings)
+    try:
+        # Ett nytt fönster öppnar ingenting av sig självt - det gör starten,
+        # när fönstret syns.
+        assert fresh.mesh_info is None
+        fresh.reopen_last_model()
+        wait_for_worker(qapp, fresh)
+        assert fresh.mesh_info is not None
+    finally:
+        fresh.close()
+
+
+def test_a_missing_last_model_is_said_plainly_not_crashed(qapp, window, tmp_path):
+    window.settings.last_model = str(tmp_path / "borta.stl")
+    window.settings.reopen_last_model = True
+
+    window.reopen_last_model()
+
+    assert "finns inte kvar" in window.status_box.toPlainText()
+
+
+def test_reopening_can_be_switched_off(qapp, window, model_file):
+    window.settings.last_model = str(model_file)
+    window.reopen_check.setChecked(False)
+
+    window.reopen_last_model()
+
+    assert window.settings.reopen_last_model is False
+    assert window.mesh_info is None
