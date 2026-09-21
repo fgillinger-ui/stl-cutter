@@ -77,6 +77,12 @@ class DovetailJoint(JointBuilder):
     joint_type = "dovetail"
     fallback = "pins"
 
+    #: Laxstjärten skjuts ihop i planet - alla öar i snittet måste glida åt
+    #: samma håll, annars går delarna inte att montera.
+    slides = True
+    min_u_mm = MIN_WIDTH_MM
+    min_v_mm = MIN_THICKNESS_MM
+
     def keys(
         self,
         region: Polygon,

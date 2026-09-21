@@ -35,6 +35,18 @@ SPAN_EDGE_COLOR = (0.15, 0.65, 0.25, 0.9)
 INSERTION_COLOR = (0.95, 0.85, 0.20, 0.40)
 INSERTION_EDGE_COLOR = (0.90, 0.75, 0.10, 0.95)
 
+#: Delarnas färg: ljus och lågmättad, så att fogmarkeringen syns mot dem.
+PART_SATURATION = 0.38
+PART_VALUE = 1.0
+
+#: Fogen målas i en egen färg - annars är den nästan omöjlig att se i en
+#: enfärgad del. Samma färg på båda delarna: det är ytorna som ska mötas.
+JOINT_COLOR = (1.0, 0.45, 0.10, 1.0)
+
+#: Hur långt från snittet en yta räknas som en del av fogen. Täcker med marginal
+#: det djup en laxstjärt eller styrpinne sticker in.
+JOINT_BAND_MM = 15.0
+
 #: Hur långt utanför modellen zonmarkeringen ritas, som andel av storleken.
 SPAN_MARGIN = 0.02
 BED_COLOR_ON_DARK = (0.45, 0.5, 0.55, 0.6)
@@ -69,14 +81,57 @@ MOUSE_HELP = (
 
 
 def part_colors(count: int) -> list[tuple[float, float, float, float]]:
-    """Tydligt skilda färger, en per del."""
+    """Tydligt skilda färger, en per del.
+
+    Ljusa och lågmättade: `shaded`-skuggningen mörknar allt som vetter från
+    ljuset, och en mättad grundfärg blir då nästan svart. Ljusa delar gör att
+    fogens markering syns mot dem.
+    """
     if count <= 0:
         return []
     colors = []
     for i in range(count):
         hue = (i * 0.618033988749895) % 1.0  # gyllene snittet sprider färgerna
-        r, g, b = colorsys.hsv_to_rgb(hue, 0.55, 0.95)
+        r, g, b = colorsys.hsv_to_rgb(hue, PART_SATURATION, PART_VALUE)
         colors.append((r, g, b, 1.0))
+    return colors
+
+
+def joint_face_mask(mesh, planes, band_mm: float = JOINT_BAND_MM) -> np.ndarray:
+    """Vilka trianglar som hör till fogen: de som ligger nära ett snittplan.
+
+    Fogens geometri sitter alltid inom nyckelns djup från snittet, så ett band
+    kring planet fångar både tappen och urtaget - och kontaktytan de möts i.
+
+    Hela triangeln måste ligga i bandet. Räknades den på sin mittpunkt skulle
+    en enda stor sidoyta kunna målas i sin helhet fast bara en flik av den är
+    i närheten av fogen.
+    """
+    vertices = np.asarray(mesh.vertices, dtype=float)
+    faces = np.asarray(mesh.faces, dtype=int)
+    mask = np.zeros(len(faces), dtype=bool)
+    for plane in planes or []:
+        normal = np.asarray(plane.normal, dtype=float)
+        length = float(np.linalg.norm(normal))
+        if length < 1e-9:
+            continue
+        normal = normal / length
+        distance = (vertices - np.asarray(plane.origin, dtype=float)) @ normal
+        inside = np.abs(distance) <= float(band_mm)
+        mask |= inside[faces].all(axis=1)
+    return mask
+
+
+def face_colors(
+    mesh,
+    planes,
+    base: tuple[float, float, float, float],
+    band_mm: float = JOINT_BAND_MM,
+) -> np.ndarray:
+    """Delens färg per triangel, med fogen i en avvikande färg."""
+    colors = np.tile(np.asarray(base, dtype=float), (len(mesh.faces), 1))
+    mask = joint_face_mask(mesh, planes, band_mm)
+    colors[mask] = np.asarray(JOINT_COLOR, dtype=float)
     return colors
 
 
@@ -197,10 +252,11 @@ def bed_grid(printer, spacing_mm: float = 20.0):
     return size, float(spacing_mm)
 
 
-def mesh_data(mesh: trimesh.Trimesh) -> gl.MeshData:
+def mesh_data(mesh: trimesh.Trimesh, colors=None) -> gl.MeshData:
     return gl.MeshData(
         vertexes=np.asarray(mesh.vertices, dtype=float),
         faces=np.asarray(mesh.faces, dtype=int),
+        faceColors=None if colors is None else np.asarray(colors, dtype=float),
     )
 
 
@@ -363,8 +419,11 @@ class ModelView(gl.GLViewWidget):
     def showing_parts(self) -> bool:
         return bool(self._part_items)
 
-    def show_parts(self, parts) -> None:
+    def show_parts(self, parts, planes=None) -> None:
         """Visa de kapade delarna i olika färger och dölj originalmodellen.
+
+        Fogarna målas i en egen färg, annars försvinner de i delens egen: det
+        är just de ytorna man vill granska före utskrift.
 
         Snittplanen lämnas kvar - annars går de inte att ta tag i efter en
         förhandsgranskning, och då kan man inte justera och titta igen.
@@ -377,8 +436,12 @@ class ModelView(gl.GLViewWidget):
         centres = []
         for part, color in zip(parts, colors):
             mesh = getattr(part, "mesh", part)
+            painted = face_colors(mesh, planes, color) if planes else None
             item = gl.GLMeshItem(
-                meshdata=mesh_data(mesh), smooth=False, shader="shaded", color=color
+                meshdata=mesh_data(mesh, painted),
+                smooth=False,
+                shader="shaded",
+                **({} if painted is not None else {"color": color}),
             )
             self.addItem(item)
             self._part_items.append(item)

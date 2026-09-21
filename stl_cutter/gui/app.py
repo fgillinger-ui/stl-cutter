@@ -57,7 +57,12 @@ from ..core.planner import (
 )
 from ..core.printers import PrinterProfile, get_printer, load_printers, save_profile
 from ..core.resize import ResizeError
-from ..core.recommender import JOINT_TYPES, build_recommendation
+from ..core.recommender import (
+    JOINT_TYPES,
+    build_recommendation,
+    pin_diameter,
+    pin_diameter_key,
+)
 from . import joint_images
 from .joint_help import JointHelpDialog
 from .paths import log_file
@@ -522,6 +527,19 @@ class MainWindow(QMainWindow):
         self.stop_spin.setEnabled(False)
         self.stop_spin.valueChanged.connect(self._on_stop_changed)
         settings_row.addWidget(self.stop_spin)
+
+        settings_row.addSpacing(12)
+        self.pin_label = QLabel("Styrpinnar Ø:")
+        settings_row.addWidget(self.pin_label)
+        self.pin_spin = self._spin(2.0, 20.0, " mm", decimals=1, step=0.5)
+        self.pin_spin.setToolTip(
+            "Tjocklek på styrpinnarna. Programmet föreslår en diameter utifrån\n"
+            "godstjockleken; här kan du prova dig fram. Grövre pinne tål mer,\n"
+            "men kräver mer material runt hålet och tätare passning."
+        )
+        self.pin_spin.setEnabled(False)
+        self.pin_spin.valueChanged.connect(self._on_pin_changed)
+        settings_row.addWidget(self.pin_spin)
         settings_row.addStretch(1)
         layout.addLayout(settings_row)
 
@@ -2087,6 +2105,12 @@ class MainWindow(QMainWindow):
                 if is_dovetail
                 else "Gäller bara laxstjärt."
             )
+
+            diameter = pin_diameter(cut.recommendation)
+            self.pin_spin.setEnabled(diameter is not None)
+            self.pin_label.setEnabled(diameter is not None)
+            if diameter is not None:
+                self.pin_spin.setValue(diameter)
         finally:
             self._filling = False
 
@@ -2134,6 +2158,21 @@ class MainWindow(QMainWindow):
             if enabled
             else f"Snitt {cut.index}: laxstjärtsspåret går igenom."
         )
+
+    def _on_pin_changed(self, *_args) -> None:
+        """Sätt styrpinnarnas diameter för hand."""
+        row = self.cut_table.currentRow()
+        if self._filling or self.plan is None or not (0 <= row < len(self.plan.cuts)):
+            return
+        cut = self.plan.cuts[row]
+        if cut.recommendation is None or pin_diameter(cut.recommendation) is None:
+            return
+
+        diameter = float(self.pin_spin.value())
+        key = pin_diameter_key(cut.recommendation)
+        cut.recommendation.params = {**(cut.recommendation.params or {}), key: diameter}
+        self.result = None
+        self.status(f"Snitt {cut.index}: styrpinnar Ø {diameter:.1f} mm.")
 
     def _show_joint_image(self, joint_type: str) -> None:
         """Bild på den valda fogtypen, om den finns."""
@@ -2203,7 +2242,7 @@ class MainWindow(QMainWindow):
         self.result = result
         self._report_result(result)
         self.status("Förhandsgranskning - inga filer har skrivits.")
-        self.view.show_parts(result.parts)
+        self.view.show_parts(result.parts, planes=result.plan.planes)
         # Planen ligger kvar ovanpå delarna, så man kan justera och titta igen.
         self.view.show_planes(self.plan.planes, self.plan.bounds)
         if self.explode_slider.value() == 0:
@@ -2218,6 +2257,11 @@ class MainWindow(QMainWindow):
         if result.joints:
             self.status(f"Byggde {len(built)} av {len(result.joints)} fogar.")
         for joint in result.joints:
+            if joint.slide_along:
+                self.status(
+                    f"Snitt {joint.cut_index}: delarna skjuts ihop längs {joint.slide_along} "
+                    "- alla fogar i snittet glider åt samma håll."
+                )
             if joint.fell_back:
                 self.status(
                     f"Snitt {joint.cut_index}: fogen {joint.requested_type} fick inte plats, "
@@ -2352,7 +2396,7 @@ class MainWindow(QMainWindow):
         self._summarise_result(result)
         self.status(f"Skrev {len(export.part_files)} filer till {export.directory}")
         self.status(f"Rapport: {export.report_file.name}")
-        self.view.show_parts(result.parts)
+        self.view.show_parts(result.parts, planes=result.plan.planes)
         self.on_bed_toggled()
 
     # ------------------------------------------------------------------

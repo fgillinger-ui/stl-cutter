@@ -107,6 +107,9 @@ class JointResult:
     applied: bool
     warnings: list[str] = field(default_factory=list)
     attempts: list[str] = field(default_factory=list)
+    #: Riktningen delarna skjuts ihop i, i världskoordinater. `None` för fogar
+    #: som inte låser delarna i planet och alltså kan sättas ihop rakt.
+    slide_direction: "np.ndarray | None" = None
 
     @property
     def fell_back(self) -> bool:
@@ -244,6 +247,31 @@ def contact_region(
     return clean_polygon(overlap), frame
 
 
+def long_edge_angle(polygon) -> float:
+    """Vinkeln för den långa sidan i polygonens minsta omslutande rektangel."""
+    rectangle = polygon.minimum_rotated_rectangle
+    coords = np.asarray(rectangle.exterior.coords)[:4]
+    edges = coords[1:] - coords[:-1]
+    lengths = np.linalg.norm(edges, axis=1)
+    long_edge = edges[int(np.argmax(lengths))]
+    return float(np.arctan2(long_edge[1], long_edge[0]))
+
+
+def rotate_frame(region, frame: PlaneFrame, angle: float) -> tuple[PlaneFrame, "Polygon"]:
+    """Vrid systemet `angle` radianer kring n, och geometrin med det."""
+    cos_a, sin_a = float(np.cos(angle)), float(np.sin(angle))
+    rotated = PlaneFrame(
+        origin=frame.origin,
+        u=cos_a * frame.u + sin_a * frame.v,
+        v=-sin_a * frame.u + cos_a * frame.v,
+        n=frame.n,
+    )
+    region_rotated = shapely.affinity.rotate(
+        region, -np.degrees(angle), origin=(0.0, 0.0), use_radians=False
+    )
+    return rotated, region_rotated
+
+
 def aligned_frame(region, frame: PlaneFrame) -> tuple[PlaneFrame, Polygon]:
     """Rikta `u` längs kontaktytans långa riktning och `v` längs den korta.
 
@@ -252,23 +280,68 @@ def aligned_frame(region, frame: PlaneFrame) -> tuple[PlaneFrame, Polygon]:
     largest = largest_polygon(region)
     if largest is None:
         return frame, largest
+    return rotate_frame(region, frame, long_edge_angle(largest))
 
-    rectangle = largest.minimum_rotated_rectangle
-    coords = np.asarray(rectangle.exterior.coords)[:4]
-    edges = coords[1:] - coords[:-1]
-    lengths = np.linalg.norm(edges, axis=1)
-    long_edge = edges[int(np.argmax(lengths))]
-    angle = float(np.arctan2(long_edge[1], long_edge[0]))
 
-    cos_a, sin_a = float(np.cos(angle)), float(np.sin(angle))
-    new_u = cos_a * frame.u + sin_a * frame.v
-    new_v = -sin_a * frame.u + cos_a * frame.v
-    rotated = PlaneFrame(origin=frame.origin, u=new_u, v=new_v, n=frame.n)
+#: Hur tätt glidriktningen provas när öarnas egna riktningar inte duger.
+SLIDE_SWEEP_DEG = 15.0
 
-    region_rotated = shapely.affinity.rotate(
-        region, -np.degrees(angle), origin=(0.0, 0.0), use_radians=False
+
+def _spans(polygon, angle: float) -> tuple[float, float]:
+    """Öns mått längs u och v om systemet vrids `angle` radianer."""
+    turned = shapely.affinity.rotate(
+        polygon, -np.degrees(angle), origin=(0.0, 0.0), use_radians=False
     )
-    return rotated, region_rotated
+    minx, miny, maxx, maxy = turned.bounds
+    return maxx - minx, maxy - miny
+
+
+def slide_angle(patches, min_u: float, min_v: float) -> float:
+    """En gemensam glidriktning för alla öar i ett snitt.
+
+    Varje ö får annars sin egen långa riktning, och då pekar fogarna åt olika
+    håll: den ena skjuts ihop uppifrån, den andra från sidan, och delarna går
+    inte att montera alls. En glidande fog måste glida åt samma håll överallt
+    i skarven, så riktningen väljs en gång för hela snittet.
+
+    Den riktning väljs som får plats i flest öar; står det lika vinner den med
+    mest marginal i den knappaste ön.
+
+    I första hand provas öarnas egna riktningar - det är längs dem materialet
+    faktiskt sträcker sig. En snedställd riktning ger en större omslutande
+    låda men mindre material att fästa i, så svepet används bara om ingen av
+    öarnas egna riktningar räcker till alla öar.
+    """
+
+    def score(angle: float) -> tuple[int, float]:
+        fits, margins = 0, []
+        for patch in patches:
+            u_span, v_span = _spans(patch, angle)
+            if u_span >= min_u and v_span >= min_v:
+                fits += 1
+                margins.append(min(u_span / min_u, v_span / min_v))
+        return fits, (min(margins) if margins else 0.0)
+
+    def best_of(angles: list[float]) -> tuple[float, tuple[int, float]]:
+        best_angle, best_score = float(angles[0]), (-1, -1.0)
+        for angle in angles:
+            value = score(angle)
+            if value > best_score:
+                best_angle, best_score = float(angle), value
+        return best_angle, best_score
+
+    natural: list[float] = []
+    for patch in patches:
+        angle = long_edge_angle(patch)
+        natural.extend([angle, angle + np.pi / 2.0])
+
+    angle, value = best_of(natural)
+    if value[0] < len(patches):
+        step = np.radians(SLIDE_SWEEP_DEG)
+        swept, swept_value = best_of(np.arange(0.0, np.pi, step).tolist())
+        if swept_value[0] > value[0]:
+            angle = swept
+    return angle
 
 
 def reach(
@@ -467,10 +540,21 @@ class JointBuilder:
     #: Enklare fogtyp att falla tillbaka på om den här inte går att bygga.
     fallback: str | None = None
 
+    #: Fogen låser delarna vinkelrätt mot snittet och måste skjutas ihop i
+    #: planet. Då måste alla öar i samma snitt glida åt samma håll.
+    slides: bool = False
+    #: Minsta mått en ö behöver längs u respektive v för att fogen ska få plats.
+    #: Används när den gemensamma glidriktningen väljs.
+    min_u_mm: float = 1.0
+    min_v_mm: float = 1.0
+
     #: Hur långt delarna sträcker sig från snittytan längs n. Sätts av `build()`
     #: innan `keys()` anropas, så att fogen kan begränsas till materialet.
     reach_a: float = 1e6
     reach_b: float = 1e6
+
+    #: Riktningen delarna skjuts ihop i, satt av `build()` för glidande fogar.
+    slide_direction: "np.ndarray | None" = None
 
     #: Del B och det lokala systemet, satta av `build()` så att `keys()` kan
     #: mäta hur djupt materialet faktiskt räcker bakom kontaktytan.
@@ -564,9 +648,27 @@ class JointBuilder:
         pockets: list[trimesh.Trimesh] = []
         problems: list[str] = []
 
-        for patch in patches:
+        self.slide_direction = None
+        if self.slides and len(patches) > 1:
+            # Glidande fogar: en riktning för hela snittet, annars går delarna
+            # inte att skjuta ihop.
+            angle = slide_angle(patches, self.min_u_mm, self.min_v_mm)
+            shared_frame, _ = rotate_frame(patches[0], base_frame, angle)
+            oriented_patches = [
+                shapely.affinity.rotate(
+                    patch, -np.degrees(angle), origin=(0.0, 0.0), use_radians=False
+                )
+                for patch in patches
+            ]
+            placements = [(shared_frame, patch) for patch in oriented_patches]
+            self.slide_direction = np.asarray(shared_frame.v, dtype=float)
+        else:
             # Varje ö får sin egen riktning - ribbor kan ligga åt olika håll.
-            frame, oriented = aligned_frame(patch, base_frame)
+            placements = [aligned_frame(patch, base_frame) for patch in patches]
+            if self.slides and placements and placements[0][0] is not None:
+                self.slide_direction = np.asarray(placements[0][0].v, dtype=float)
+
+        for frame, oriented in placements:
             oriented = largest_polygon(oriented)
             if oriented is None:
                 continue
