@@ -641,6 +641,14 @@ halvtransparenta plan, och efter kapning delarna i olika färger med en slider
 som spränger isär dem radiellt från modellens mitt. Byggplattan visas som
 rutnät via en kryssruta.
 
+**Vänsterpanelen** — stegen ligger i en `QTabWidget`, ett steg per flik
+(`_build_ui`, `_step_page`). Allt låg förut i en enda kolumn i en `QScrollArea`:
+på en vanlig skärm hamnade knappen man skulle trycka på lika gärna utanför
+fönstret som i det. Varje flik har kvar en `QScrollArea` som säkerhetsnät för
+små skärmar, men i normalfallet syns hela fliken. Fliken *4b. Delar* fylls av
+`_fill_part_table()` efter en förhandsgranskning: namn (blir filnamnet, via
+`exporter.safe_name()`) och färg per del.
+
 **Fogen i förhandsgranskningen** — delarnas färger är ljusa och lågmättade
 (`PART_SATURATION`, `PART_VALUE`): `shaded`-skuggningen mörknar allt som vetter
 bort från ljuset, och en mättad grundfärg blir då nästan svart. Fogytorna målas
@@ -650,6 +658,18 @@ från ett snittplan. Hela triangeln måste vara innanför — räknades den på 
 mittpunkt skulle en enda stor sidoyta kunna målas i sin helhet fast bara en
 flik av den är i närheten av fogen. På en kapad hylla blir ungefär 7 % av
 delens area målad: just fogen och kontaktytan, inget annat.
+
+**Den senaste modellen** — `Settings.last_model` skrivs vid varje öppning och
+läses av `reopen_last_model()` när fönstret byggts klart. Filen kan ha flyttats
+sedan sist; då sägs det i loggen och programmet startar tomt, i stället för att
+möta användaren med ett felmeddelande.
+
+**Delarnas namn** — `exporter.safe_name()` städar namnet innan det blir en
+sökväg: ett snedstreck hade skrivit filen i en annan mapp. Två delar med samma
+namn får löpnummer, annars hade den ena skrivit över den andra. Namnen och
+färgerna ligger med i projektfilen (`part_names`, `part_colours`), med
+delindex som nyckel - i JSON blir de strängar och görs om till tal vid
+inläsning.
 
 **Tillstånd** — `gui.settings.Settings` (dataklass) sparas som JSON i
 `~/.config/stl-cutter/settings.json` när fönstret stängs. En trasig eller

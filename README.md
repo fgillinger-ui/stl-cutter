@@ -70,11 +70,15 @@ Sök efter **STL Cutter** i programmenyn, eller kör i en terminal:
 stl-cutter-gui
 ```
 
-Fönstret har en panel till vänster som du arbetar dig igenom uppifrån och ner,
-och en 3D-vy till höger.
+Fönstret har en panel till vänster med **en flik per steg** — 1. Modell,
+2. Skrivare, 3. Snitt, 4. Delar, 5. Exportera — och en 3D-vy till höger. Varje
+flik får plats i sin helhet, så ingenting hamnar utanför fönsterkanten.
 
 1. **Modell** — klicka *Öppna fil…* eller dra en STL- eller 3MF-fil in i
-   fönstret. Programmet visar mått, volym och om modellen är hel.
+   fönstret. Programmet visar mått, volym och om modellen är hel. Kryssrutan
+   *Öppna den senaste modellen vid start* gör att programmet tar upp den fil du
+   höll på med förra gången, i stället för att du får leta upp den igen. Är
+   filen flyttad står det, och programmet startar tomt.
 1b. **Ändra mått** — behöver modellen vara större eller mindre? Skriv in de
    önskade måtten. Klicka *Visa var modellen kan sträckas* för att se de gröna
    partierna där tvärsnittet är konstant — det är där materialet skjuts in.
@@ -143,6 +147,13 @@ och en 3D-vy till höger.
    Raden under knapparna visar hela tiden hur många delar planen ger, hur stor
    den största blir, och varnar i rött om någon del inte får plats på
    byggplattan.
+4b. **Delar** — efter en förhandsgranskning listas varje del med sitt mått.
+   Skriv ett **namn** på raden så heter filen det vid export ("vänster gavel"
+   i stället för `part_02`); tecken som inte går i ett filnamn byts mot `_`,
+   och två delar med samma namn får ett löpnummer så att ingen fil skriver
+   över en annan. Klicka på **färgrutan** för att välja delens färg i 3D-vyn,
+   och *Fogens färg…* för färgen på ytorna som ska mötas. *Återställ färgerna*
+   tar tillbaka programmets egna.
 5. **Kapa och exportera** — klicka *Förhandsgranska* för att se resultatet först:
    modellen kapas i minnet, delarna visas isärdragna i 3D-vyn och du får de
    verkliga måtten — **inga filer skrivs**. Ser det rätt ut, välj målmapp och
@@ -151,7 +162,9 @@ och en 3D-vy till höger.
 
 I 3D-vyn ser du modellen, snittplanen som orange plan, och efter kapningen
 delarna i olika färger. Dra i reglaget *Spräng isär* för att se fogarna, och
-kryssa i *Visa byggplatta* för att se skrivarens plattstorlek som rutnät.
+kryssa i *Visa byggplatta* för att se skrivarens plattstorlek som rutnät —
+plattan läggs mitt under det som visas, oavsett var modellen har sina
+koordinater.
 Kryssrutan *Ljus bakgrund* växlar mellan ljus och mörk vy — valet sparas.
 
 ### Att se runt modellen

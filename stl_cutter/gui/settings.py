@@ -35,6 +35,17 @@ class Settings:
     base_profile: str = ""
     #: Mappen projekten senast sparades i eller öppnades från.
     last_project_dir: str = ""
+    #: Modellen som var öppen sist. Öppnas igen vid start, om filen finns kvar.
+    last_model: str = ""
+    #: Öppna den automatiskt vid start. Går att stänga av för den som hellre
+    #: börjar från tomt bord.
+    reopen_last_model: bool = True
+    #: Färgen på fogytorna i 3D-vyn, som "#RRGGBB".
+    joint_colour: str = "#FF731A"
+    #: Filamentprofilen i slicern, och den temperatur du brukar köra den i.
+    #: Behövs för att temperatur och fläkt ska kunna skrivas.
+    filament_profile: str = ""
+    filament_temp_c: float = 0.0
 
     @classmethod
     def load(cls, path: Path | None = None) -> "Settings":

@@ -150,8 +150,9 @@ def test_the_files_are_valid_json(tmp_path):
         shelf_load(), tmp_path, base_profile="0.20mm Standard @FF C5"
     )
 
-    assert len(bundle.files) == 1
-    data = json.loads(bundle.files[0].read_text(encoding="utf-8"))
+    profiles = [p for p in bundle.files if p.suffix == ".json"]
+    assert len(profiles) == 1
+    data = json.loads(profiles[0].read_text(encoding="utf-8"))
     assert data["name"] == "Bärande delar"
 
 
@@ -172,10 +173,11 @@ def test_both_files_are_written_when_the_filament_is_known(tmp_path):
         normal_temp_c=235.0,
     )
 
-    assert len(bundle.files) == 2
-    assert not bundle.notes
+    assert len([p for p in bundle.files if p.suffix == ".json"]) == 2
+    # Inget saknas - den enda anteckningen är den om vad importen bygger på.
+    assert not [n for n in bundle.notes if "filamentprofil" in n]
     ids = set()
-    for path in bundle.files:
+    for path in (p for p in bundle.files if p.suffix == ".json"):
         data = json.loads(path.read_text(encoding="utf-8"))
         ids |= {k for k in data if k.endswith("_settings_id")}
     assert ids == {"print_settings_id", "filament_settings_id"}
@@ -197,3 +199,45 @@ def test_the_name_survives_as_a_filename(tmp_path):
     data = json.loads(bundle.files[0].read_text(encoding="utf-8"))
     assert "/" not in data["name"]
     assert data["name"] == data["print_settings_id"]
+
+
+# --------------------------------------------------------------------------
+# Listan att knappa in för hand
+# --------------------------------------------------------------------------
+
+
+def test_a_readable_list_is_written_next_to_the_profiles(tmp_path):
+    """Importen kan vägra av skäl vi inte ser - värdena ska ändå gå att sätta."""
+    bundle = profile_core.write_profiles(
+        shelf_load(), tmp_path, base_profile="0.20mm Standard @FF C5"
+    )
+
+    text_files = [p for p in bundle.files if p.suffix == ".txt"]
+    assert len(text_files) == 1
+    text = text_files[0].read_text(encoding="utf-8")
+    assert "0.20mm Standard @FF C5" in text
+    assert "wall_loops" in text and "Väggar" in text
+    assert "25%" in text
+
+
+def test_the_list_names_the_filament_settings_when_they_were_written(tmp_path):
+    bundle = profile_core.write_profiles(
+        shelf_load(),
+        tmp_path,
+        base_profile="0.20mm Standard @FF C5",
+        filament_base="Flashforge PETG @FF C5",
+        normal_temp_c=235.0,
+    )
+
+    text = [p for p in bundle.files if p.suffix == ".txt"][0].read_text(encoding="utf-8")
+    assert "243" in text  # 235 + 8
+    assert "Fläkt max" in text
+
+
+def test_the_note_says_which_profile_the_import_depends_on(tmp_path):
+    bundle = profile_core.write_profiles(
+        shelf_load(), tmp_path, base_profile="0.20mm Standard @FF C5"
+    )
+
+    assert any("0.20mm Standard @FF C5" in note for note in bundle.notes)
+    assert any("inställningar.txt" in note for note in bundle.notes)

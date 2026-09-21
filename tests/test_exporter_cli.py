@@ -601,3 +601,56 @@ def test_the_cli_can_just_show_the_project(tmp_path, big_box, capsys):
 def test_a_broken_project_is_a_friendly_error(tmp_path, capsys):
     assert main(["project", str(tmp_path / "finns-inte.stlcut")]) == 2
     assert "Hittar ingen" in capsys.readouterr().err
+
+
+# --------------------------------------------------------------------------
+# Egna namn på delarna
+# --------------------------------------------------------------------------
+
+
+def test_safe_name_keeps_the_name_but_not_the_path():
+    from stl_cutter.core.exporter import safe_name
+
+    assert safe_name("vänster gavel", "part_01") == "vänster gavel"
+    # Ett snedstreck hade skrivit filen i en annan mapp.
+    assert safe_name("hylla/vänster", "part_01") == "hylla_vänster"
+    assert safe_name("  ", "part_01") == "part_01"
+    assert safe_name("..", "part_01") == "part_01"
+    assert safe_name(None, "part_02") == "part_02"
+    assert len(safe_name("x" * 200, "part_01")) <= 60
+
+
+def test_named_parts_are_written_under_their_names(tmp_path, big_box, printer):
+    from stl_cutter.core.exporter import export_parts
+
+    split_result = cut_mesh(big_box, plan_splits(big_box, printer, auto_orient=False))
+    names = {part.index: f"del-{part.index}" for part in split_result.parts}
+
+    export = export_parts(split_result, tmp_path, printer, names=names)
+
+    written = sorted(p.stem for p in export.part_files)
+    assert all(stem.startswith("del-") for stem in written), written
+
+
+def test_two_parts_with_the_same_name_do_not_overwrite_each_other(
+    tmp_path, big_box, printer
+):
+    """Samma namn på två delar får inte betyda att den ena försvinner."""
+    from stl_cutter.core.exporter import export_parts
+
+    split_result = cut_mesh(big_box, plan_splits(big_box, printer, auto_orient=False))
+    names = {part.index: "hylla" for part in split_result.parts}
+
+    export = export_parts(split_result, tmp_path, printer, names=names)
+
+    assert len(export.part_files) == len({p.name for p in export.part_files})
+    assert len(export.part_files) >= len(split_result.parts)
+
+
+def test_parts_without_a_name_keep_part_nn(tmp_path, big_box, printer):
+    from stl_cutter.core.exporter import export_parts
+
+    split_result = cut_mesh(big_box, plan_splits(big_box, printer, auto_orient=False))
+    export = export_parts(split_result, tmp_path, printer, names={})
+
+    assert all(p.stem.startswith("part_") for p in export.part_files)
