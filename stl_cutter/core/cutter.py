@@ -21,6 +21,25 @@ VOLUME_TOLERANCE = 0.005  # 0.5 %
 #: Delar mindre än så här (mm3) betraktas som skräp från snittet och kastas.
 MIN_PART_VOLUME_MM3 = 1e-3
 
+#: Hur nära en axel en riktning måste ligga för att beskrivas som just den axeln.
+AXIS_ALIGNED_COSINE = 0.98
+
+
+def describe_direction(vector) -> str:
+    """Riktningen i klartext, till exempel "Z-axeln" eller "snett i XZ-planet"."""
+    if vector is None:
+        return ""
+    vector = np.asarray(vector, dtype=float)
+    norm = float(np.linalg.norm(vector))
+    if norm < 1e-9:
+        return ""
+    vector = vector / norm
+    axis = int(np.argmax(np.abs(vector)))
+    if abs(float(vector[axis])) >= AXIS_ALIGNED_COSINE:
+        return AXIS_NAMES[axis]
+    others = [AXIS_NAMES[a][0] for a in np.argsort(-np.abs(vector))[:2]]
+    return f"snett i {''.join(sorted(others))}-planet"
+
 
 def preferred_engine() -> str | None:
     """`manifold3d` om det finns installerat, annars trimesh inbyggda motor."""
@@ -72,6 +91,9 @@ class JointRecord:
     requested_type: str
     applied: bool
     warnings: list[str] = field(default_factory=list)
+    #: Riktningen delarna skjuts ihop i, i klartext. Tom för fogar som går att
+    #: sätta ihop rakt.
+    slide_along: str = ""
 
     @property
     def fell_back(self) -> bool:
@@ -86,6 +108,7 @@ class JointRecord:
             "requested_type": self.requested_type,
             "applied": self.applied,
             "fell_back": self.fell_back,
+            "slide_along": self.slide_along,
             "warnings": list(self.warnings),
         }
 
@@ -186,12 +209,14 @@ def cut_mesh(
     joints: bool = False,
     printer=None,
     force_joint: str | None = None,
+    pin_diameter_mm: float | None = None,
     progress=None,
 ) -> CutResult:
     """Applicera planens orientering och snitt och returnera delarna.
 
     Med `joints=True` byggs dessutom foggeometrin enligt planens
-    rekommendationer (fas 3). `force_joint` tvingar en viss fogtyp.
+    rekommendationer (fas 3). `force_joint` tvingar en viss fogtyp och
+    `pin_diameter_mm` en viss tjocklek på styrpinnarna.
     """
     engine = engine if engine is not None else preferred_engine()
     original_volume = float(abs(mesh.volume))
@@ -246,7 +271,13 @@ def cut_mesh(
         log.info("Volymavvikelse efter snitt: %.3f %%", result.volume_error * 100)
 
     if joints:
-        apply_joints(result, printer=printer, force_joint=force_joint, progress=progress)
+        apply_joints(
+            result,
+            printer=printer,
+            force_joint=force_joint,
+            pin_diameter_mm=pin_diameter_mm,
+            progress=progress,
+        )
     report(progress, 1.0, f"Klar - {len(parts)} delar")
 
     if len(parts) != plan.part_count:
@@ -409,7 +440,9 @@ def build_volume_slack(part: "Part", printer, axis: int | None = None) -> float:
     return low
 
 
-def _params_for(cut, printer, force_joint: str | None) -> JointParams:
+def _params_for(
+    cut, printer, force_joint: str | None, pin_diameter_mm: float | None = None
+) -> JointParams:
     """Fogparametrar för ett snitt: rekommendationen från fas 2, eller ett tvingat val."""
     clearance = printer.clearance_mm if printer is not None else None
     if cut.recommendation is not None:
@@ -420,6 +453,15 @@ def _params_for(cut, printer, force_joint: str | None) -> JointParams:
             params.clearance_mm = clearance
     if force_joint:
         params.joint_type = force_joint
+    if pin_diameter_mm:
+        # Styrpinnar förekommer i två roller och har varsin parameter: som egen
+        # fogtyp och som komplement till en annan fog.
+        diameter = float(pin_diameter_mm)
+        if params.joint_type == "pins":
+            params.diameter_mm = diameter
+            params.length_mm = round(min(3.0 * diameter, 20.0), 1)
+        elif params.guide_pins > 0:
+            params.guide_pin_diameter_mm = diameter
     return params
 
 
@@ -427,6 +469,7 @@ def apply_joints(
     result: "CutResult",
     printer=None,
     force_joint: str | None = None,
+    pin_diameter_mm: float | None = None,
     progress=None,
 ) -> "CutResult":
     """Bygg fogar mellan alla angränsande delar enligt planens rekommendationer."""
@@ -441,7 +484,7 @@ def apply_joints(
             0.5 + 0.5 * (number - 1) / len(pairs),
             f"Bygger fog {number} av {len(pairs)}",
         )
-        params = _params_for(cut, printer, force_joint)
+        params = _params_for(cut, printer, force_joint, pin_diameter_mm)
         if params.joint_type == "none":
             continue
 
@@ -486,6 +529,7 @@ def apply_joints(
             requested_type=joint.requested_type,
             applied=joint.applied,
             warnings=joint.warnings,
+            slide_along=describe_direction(joint.slide_direction),
         )
         result.joints.append(record)
         for warning in joint.warnings:

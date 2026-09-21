@@ -152,6 +152,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Fogtyp. 'auto' följer rekommendationen per snitt.",
     )
     cut.add_argument(
+        "--pin-diameter",
+        type=float,
+        default=None,
+        metavar="MM",
+        help="Tjocklek på styrpinnarna. Standard: räknas ut ur godstjockleken. "
+        "Gäller både fogtypen pins och styrpinnar som komplement till en annan fog.",
+    )
+    cut.add_argument(
         "--no-joints",
         action="store_true",
         help="Bygg ingen foggeometri - bara plana snitt.",
@@ -786,6 +794,7 @@ def _cmd_cut(args: argparse.Namespace) -> int:
         joints=build_joints,
         printer=printer,
         force_joint=None if args.joint == "auto" else args.joint,
+        pin_diameter_mm=args.pin_diameter,
     )
     print(f"\nKapade i {len(result.parts)} delar.")
     if result.joints:
@@ -794,9 +803,12 @@ def _cmd_cut(args: argparse.Namespace) -> int:
         for joint in result.joints:
             status = joint.joint_type if joint.applied else "ingen fog"
             note = f" (önskad: {joint.requested_type})" if joint.fell_back else ""
+            slide = (
+                f", skjuts ihop längs {joint.slide_along}" if joint.slide_along else ""
+            )
             print(
                 f"  Snitt {joint.cut_index}: del {joint.part_a:02d}-{joint.part_b:02d} "
-                f"-> {status}{note}"
+                f"-> {status}{note}{slide}"
             )
     print(f"Volymavvikelse: {result.volume_error * 100:.3f} %")
     for warning in result.warnings:

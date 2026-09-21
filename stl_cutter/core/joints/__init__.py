@@ -277,6 +277,7 @@ def build_joint(
             return JointResult(
                 out_a, out_b, joint_type, requested, applied=True,
                 warnings=warnings, attempts=attempts,
+                slide_direction=builder.slide_direction,
             )
 
         fallback = builder.fallback

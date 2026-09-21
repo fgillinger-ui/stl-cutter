@@ -2265,3 +2265,107 @@ def test_opening_something_that_is_not_a_project_says_so(qapp, window, model_fil
 
     assert window.mesh_info is None
     assert "inget projekt" in window.status_box.toPlainText()
+
+
+# --------------------------------------------------------------------------
+# Fogen i förhandsgranskningen
+# --------------------------------------------------------------------------
+
+
+def test_joint_faces_are_painted_in_their_own_colour():
+    """Ytorna nära snittet får fogfärgen, resten delens egen."""
+    import trimesh
+
+    from stl_cutter.core.planner import Plane
+    from stl_cutter.gui.view3d import JOINT_COLOR, face_colors
+
+    mesh = trimesh.creation.box(extents=[100, 100, 100])
+    mesh = mesh.subdivide_to_size(5.0)
+    plane = Plane(origin=(0.0, 0.0, 0.0), normal=(0.0, 0.0, 1.0), axis=2)
+    base = (0.2, 0.4, 0.8, 1.0)
+
+    colors = face_colors(mesh, [plane], base, band_mm=10.0)
+
+    assert len(colors) == len(mesh.faces)
+    painted = np.all(np.isclose(colors, np.asarray(JOINT_COLOR)), axis=1)
+    inside = np.abs(mesh.vertices[:, 2]) <= 10.0
+    assert np.array_equal(painted, inside[mesh.faces].all(axis=1))
+    assert painted.any() and not painted.all()
+
+
+def test_faces_far_from_every_plane_keep_the_part_colour():
+    import trimesh
+
+    from stl_cutter.core.planner import Plane
+    from stl_cutter.gui.view3d import face_colors
+
+    mesh = trimesh.creation.box(extents=[10, 10, 10])
+    plane = Plane(origin=(0.0, 0.0, 500.0), normal=(0.0, 0.0, 1.0), axis=2)
+    base = (0.2, 0.4, 0.8, 1.0)
+
+    colors = face_colors(mesh, [plane], base, band_mm=15.0)
+
+    assert np.allclose(colors, np.asarray(base))
+
+
+def test_part_colours_are_light_enough_to_see_the_joint_against():
+    """Mörka delar var hela problemet - fogen försvann i dem."""
+    from stl_cutter.gui.view3d import part_colors
+
+    for red, green, blue, _alpha in part_colors(6):
+        assert min(red, green, blue) >= 0.5
+
+
+def test_preview_paints_the_joints(qapp, window, model_file):
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+    window.start_analysis()
+    wait_for_worker(qapp, window)
+
+    window.start_preview()
+    wait_for_worker(qapp, window)
+
+    assert window.view.showing_parts
+    assert any(
+        item.opts["meshdata"].faceColors() is not None for item in window.view._part_items
+    )
+
+
+# --------------------------------------------------------------------------
+# Styrpinnarnas tjocklek
+# --------------------------------------------------------------------------
+
+
+def test_pin_diameter_can_be_set_by_hand(qapp, window, model_file):
+    from stl_cutter.core.recommender import pin_diameter
+
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+    window.start_analysis()
+    wait_for_worker(qapp, window)
+
+    for row in range(window.cut_table.rowCount()):
+        combo = window.cut_table.cellWidget(row, COLUMN_JOINT)
+        combo.setCurrentIndex(combo.findData("pins"))
+    window.cut_table.setCurrentCell(0, COLUMN_JOINT)
+
+    assert window.pin_spin.isEnabled()
+    window.pin_spin.setValue(7.5)
+
+    cut = window.plan.cuts[0]
+    assert cut.recommendation.params["diameter_mm"] == pytest.approx(7.5)
+    assert pin_diameter(cut.recommendation) == pytest.approx(7.5)
+
+
+def test_pin_diameter_is_disabled_without_pins(qapp, window, model_file):
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+    window.start_analysis()
+    wait_for_worker(qapp, window)
+
+    for row in range(window.cut_table.rowCount()):
+        combo = window.cut_table.cellWidget(row, COLUMN_JOINT)
+        combo.setCurrentIndex(combo.findData("none"))
+    window.cut_table.setCurrentCell(0, COLUMN_JOINT)
+
+    assert not window.pin_spin.isEnabled()

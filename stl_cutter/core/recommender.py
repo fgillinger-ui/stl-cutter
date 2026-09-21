@@ -57,6 +57,29 @@ class JointRecommendation:
         return f"{self.joint_type} ({self.confidence * 100:.0f} % säkerhet): {self.motivation}"
 
 
+def pin_diameter_key(recommendation: "JointRecommendation") -> str | None:
+    """Vilken parameter som styr pinndiametern för den här fogen.
+
+    Styrpinnar förekommer i två roller: som egen fogtyp (`pins`) och som
+    komplement till en annan fog (`guide_pins`). De har varsin parameter.
+    """
+    if recommendation is None:
+        return None
+    if recommendation.joint_type == "pins":
+        return "diameter_mm"
+    if (recommendation.params or {}).get("guide_pins", 0) > 0:
+        return "guide_pin_diameter_mm"
+    return None
+
+
+def pin_diameter(recommendation: "JointRecommendation") -> float | None:
+    """Pinndiametern fogen använder just nu, eller `None` om den saknar pinnar."""
+    key = pin_diameter_key(recommendation)
+    if key is None:
+        return None
+    return float((recommendation.params or {}).get(key, 0.0)) or None
+
+
 def _pin_params(analysis: SectionAnalysis, clearance: float, count: int | None = None) -> dict:
     diameter = min(PIN_DIAMETER_RATIO * analysis.min_wall_mm, PIN_DIAMETER_MAX_MM)
     diameter = max(2.0, round(diameter * 2) / 2)  # avrunda till halv mm, minst 2 mm

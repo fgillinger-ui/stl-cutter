@@ -335,3 +335,60 @@ def test_a_cut_through_ribs_gets_a_joint_per_wall(printer):
             if keys is not None and len(keys.faces):
                 most = max(most, int(keys.body_count))
     assert most > 1, "varje ribba ska få en egen fog, inte bara den största ytan"
+
+
+# --------------------------------------------------------------------------
+# Styrpinnarnas tjocklek, satt för hand
+# --------------------------------------------------------------------------
+
+
+def test_manual_pin_diameter_reaches_the_pins_joint():
+    from stl_cutter.core.cutter import _params_for
+    from stl_cutter.core.recommender import JointRecommendation
+
+    class FakeCut:
+        recommendation = JointRecommendation(
+            "pins", {"count": 2, "diameter_mm": 4.0, "length_mm": 12.0}
+        )
+
+    params = _params_for(FakeCut(), None, None, pin_diameter_mm=9.0)
+
+    assert params.diameter_mm == pytest.approx(9.0)
+    # Längden följer diametern, annars sticker en grov pinne knappt in.
+    assert params.length_mm == pytest.approx(20.0)
+
+
+def test_manual_pin_diameter_reaches_guide_pins_on_another_joint():
+    from stl_cutter.core.cutter import _params_for
+    from stl_cutter.core.recommender import JointRecommendation
+
+    class FakeCut:
+        recommendation = JointRecommendation(
+            "dovetail", {"guide_pins": 2, "guide_pin_diameter_mm": 5.0}
+        )
+
+    params = _params_for(FakeCut(), None, None, pin_diameter_mm=7.0)
+
+    assert params.guide_pin_diameter_mm == pytest.approx(7.0)
+    assert params.joint_type == "dovetail"
+
+
+def test_without_a_manual_value_the_recommendation_decides():
+    from stl_cutter.core.cutter import _params_for
+    from stl_cutter.core.recommender import JointRecommendation
+
+    class FakeCut:
+        recommendation = JointRecommendation("pins", {"count": 2, "diameter_mm": 4.0})
+
+    params = _params_for(FakeCut(), None, None, pin_diameter_mm=None)
+
+    assert params.diameter_mm == pytest.approx(4.0)
+
+
+def test_direction_is_described_by_its_axis():
+    from stl_cutter.core.cutter import describe_direction
+
+    assert describe_direction([0.0, 0.0, 1.0]) == "Z"
+    assert describe_direction([-1.0, 0.0, 0.0]) == "X"
+    assert describe_direction(None) == ""
+    assert "snett" in describe_direction([0.7, 0.0, 0.7])

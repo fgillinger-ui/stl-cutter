@@ -109,6 +109,26 @@ eller när fogen ska bära last i inskjutningsriktningen. Standardhöjden är 6 
 den kan aldrig ta mer än 40 % av inskjutningslängden, för då skulle fogen inte gå
 att montera.
 
+### Glidriktningen är gemensam för hela snittet
+
+Ett snitt genom en hylla, en ram eller en stolsida träffar flera skilda ytor —
+en liggande skiva här, ett stående ben där. Varje sådan ö fick förr sin egen
+riktning, den ö-ns egen långa riktning, och resultatet blev att den ena
+laxstjärten skulle skjutas in uppifrån och den andra från sidan. Delarna gick
+då inte att montera över huvud taget.
+
+Programmet väljer därför **en** glidriktning för hela snittet: den riktning som
+får plats i flest öar, och vid lika resultat den som ger mest marginal i den
+knappaste ön. I första hand provas öarnas egna riktningar — det är längs dem
+materialet faktiskt sträcker sig. En snedställd riktning ser bredare ut på
+pappret men ger mindre material att fästa i, så svepet över alla vinklar
+används bara om ingen av öarnas egna riktningar räcker till alla öar.
+
+Riktningen skrivs ut i loggen efter en förhandsgranskning eller kapning:
+*"Snitt 1: delarna skjuts ihop längs Z - alla fogar i snittet glider åt samma
+håll."* Kontrollera att den riktningen är fri i din hylla — det programmet inte
+kan veta är om något annat står i vägen för själva inskjutningen.
+
 ---
 
 ## `pins` — styrpinnar (dowels)
@@ -132,6 +152,13 @@ fila lätt på pinnen i stället för att skriva ut om.
 
 **Tänk på:** pinnarna placeras minst 3 mm in från snittytans kant, så att
 väggen runt hålet inte spricker.
+
+**Ställa tjockleken själv:** diametern programmet räknar fram är en tumregel,
+inte ett facit. I programmet finns rutan **Styrpinnar Ø** bredvid stoppkanten —
+den gäller det markerade snittet, både när fogtypen är `pins` och när
+styrpinnar lagts till som komplement till en annan fog. Från kommandoraden är
+det `--pin-diameter MM`. Värdet sparas i projektfilen, så du kan prova dig fram
+mellan utskrifterna utan att göra om resten.
 
 ---
 

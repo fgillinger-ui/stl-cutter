@@ -269,9 +269,24 @@ systemet så att `u` följer kontaktytans långa riktning.
 | Fogtyp | Konstruktion |
 |--------|--------------|
 | `pins` | Cylindrar med fasad topp, placerade på `region.buffer(-(marginal + radie))` så att 3 mm hålls till kanten. Hålet får `clearance` i radie och 0,3 mm extra djup så pinnen bottnar mot luft. |
-| `dovetail` | Trapetsprisma, bredare vid `depth` än vid halsen (8° flare) — låser mot dragkraft. `stop_mm` stänger spårets bortre ände och kortar laxstjärten lika mycket, så att delen tar emot mot material i stället för mot friktion; kapas till `MAX_STOP_FRACTION` (40 %) av inskjutningslängden, och fasen läggs då bara i ingångsänden. 1–3 st fördelade längs `u`, var och en extruderad längs `v` (glidriktningen) med 0,4 mm fas i båda ändarna. Byggs som konvext hölje av tvärsnitt på flera nivåer, vilket inte kan ge en trasig mesh. Honan öppnas mot sidorna (`region.buffer(2)`) så att laxstjärten går att skjuta in. |
+| `dovetail` | Glidande fog (`slides = True`, se nedan). Trapetsprisma, bredare vid `depth` än vid halsen (8° flare) — låser mot dragkraft. `stop_mm` stänger spårets bortre ände och kortar laxstjärten lika mycket, så att delen tar emot mot material i stället för mot friktion; kapas till `MAX_STOP_FRACTION` (40 %) av inskjutningslängden, och fasen läggs då bara i ingångsänden. 1–3 st fördelade längs `u`, var och en extruderad längs `v` (glidriktningen) med 0,4 mm fas i båda ändarna. Byggs som konvext hölje av tvärsnitt på flera nivåer, vilket inte kan ge en trasig mesh. Honan öppnas mot sidorna (`region.buffer(2)`) så att laxstjärten går att skjuta in. |
 | `puzzle` | Följer inte den generella metoden. En profil i (u, n)-planet — `sine` eller `keyhole` med undersnitt — extruderas genom hela tjockleken och **ersätter** det plana snittet. Omfördelningen sker bara inuti ett *band* kring snittplanet: `A = (A − band) ∪ ((A ∪ B) ∩ band ∩ prismat)` och motsvarande för B. Utan bandet kunde `allt utom vågen` ta med sig material som ligger utanför kontaktytan, och en del svälja hela sin granne. |
 | `screw` | Följer inte heller den generella metoden: material tas bort ur båda delarna. Genomgående Ø3,4 mm-hål och Ø6×3 mm försänkning i A; sexkantsficka (nyckelvidd 5,5 mm) vid snittytan och hål för skruvspetsen i B. Muttern läggs i fickan före montering. Två styrpinnar varvas med skruvarna längs `u`. |
+
+**Gemensam glidriktning** — varje ö i kontaktytan fick förut sin egen riktning
+via `aligned_frame()`, ön-s egen långa riktning. På en hylla, där ett snitt
+träffar både en liggande skiva och ett stående ben, pekade riktningarna 90°
+från varandra: den ena laxstjärten skulle skjutas in uppifrån och den andra
+från sidan, och delarna gick inte att montera. För fogtyper som låser delarna i
+planet (`JointBuilder.slides`) väljer `slide_angle()` därför **en** riktning för
+hela snittet: den som får plats i flest öar (`min_u_mm` × `min_v_mm` per
+fogtyp), vid lika resultat den med störst marginal i den knappaste ön. Öarnas
+egna riktningar provas först — det är längs dem materialet sträcker sig; en
+snedställd riktning ger en större omslutande låda men mindre material att fästa
+i, så svepet (`SLIDE_SWEEP_DEG`) används bara när ingen av öarnas egna
+riktningar räcker till alla öar. Riktningen följer med ut som
+`JointResult.slide_direction` och vidare som `JointRecord.slide_along` i
+klartext ("Z", eller "snett i XZ-planet" för ett vinklat snitt), som GUI:t och CLI:n skriver ut efter kapningen.
 
 **Begränsningar mot materialet** — `build()` mäter hur långt varje del sträcker
 sig från snittytan (`reach_a`, `reach_b`) innan `keys()` anropas. Laxstjärten
@@ -619,11 +634,22 @@ vänster. Ctrl + dra flyttar vyn i stället. Ett högerklick **utan** dragning
 kryssruta; modellens och byggplattans färger byts med den, så att inget
 försvinner mot underlaget. Valet sparas i inställningarna.
 `gui.view3d` skiljer på ren geometri (`part_colors()`,
-`explode_offsets()`, `plane_quad()`, `bed_grid()`, testbara utan grafikkort) och
+`explode_offsets()`, `plane_quad()`, `bed_grid()`, `joint_face_mask()`,
+`face_colors()`, testbara utan grafikkort) och
 `ModelView`, som ritar. Modellen visas som en mesh, snittplanen som
 halvtransparenta plan, och efter kapning delarna i olika färger med en slider
 som spränger isär dem radiellt från modellens mitt. Byggplattan visas som
 rutnät via en kryssruta.
+
+**Fogen i förhandsgranskningen** — delarnas färger är ljusa och lågmättade
+(`PART_SATURATION`, `PART_VALUE`): `shaded`-skuggningen mörknar allt som vetter
+bort från ljuset, och en mättad grundfärg blir då nästan svart. Fogytorna målas
+i en egen färg per triangel (`faceColors` i `gl.MeshData`): `joint_face_mask()`
+markerar de trianglar vars **alla** hörn ligger inom `JOINT_BAND_MM` (15 mm)
+från ett snittplan. Hela triangeln måste vara innanför — räknades den på sin
+mittpunkt skulle en enda stor sidoyta kunna målas i sin helhet fast bara en
+flik av den är i närheten av fogen. På en kapad hylla blir ungefär 7 % av
+delens area målad: just fogen och kontaktytan, inget annat.
 
 **Tillstånd** — `gui.settings.Settings` (dataklass) sparas som JSON i
 `~/.config/stl-cutter/settings.json` när fönstret stängs. En trasig eller

@@ -642,3 +642,98 @@ def test_the_stop_reaches_the_geometry_from_the_recommendation():
     params = JointParams.from_recommendation(recommendation, clearance_mm=0.15)
 
     assert params.stop_mm == 7.0
+
+
+# --------------------------------------------------------------------------
+# Gemensam glidriktning
+# --------------------------------------------------------------------------
+
+
+def shelf_pair():
+    """En hylla med två skilda balkar - en liggande skiva och ett stående ben.
+
+    De två balkarna ligger vinkelrätt mot varandra, så deras egna långa
+    riktningar pekar åt olika håll. Det är precis fallet där laxstjärtarna
+    förr skars åt var sitt håll och delarna inte gick att montera.
+    """
+    shelf = trimesh.creation.box(extents=[200, 300, 12])
+    shelf.apply_translation([0, 0, 100])
+    leg = trimesh.creation.box(extents=[12, 300, 200])
+    leg.apply_translation([200, 0, 0])
+    model = trimesh.util.concatenate([shelf, leg])
+    origin, normal = np.zeros(3), np.array([0.0, 1.0, 0.0])
+    below = model.slice_plane(origin, -normal, cap=True)
+    above = model.slice_plane(origin, normal, cap=True)
+    return below, above
+
+
+def test_islands_get_one_shared_slide_direction():
+    """Alla öar i samma snitt måste glida åt samma håll."""
+    import shapely
+
+    from stl_cutter.core.joints.base import (
+        aligned_frame,
+        contact_region,
+        islands,
+        rotate_frame,
+        slide_angle,
+    )
+    from stl_cutter.core.joints.dovetail import MIN_THICKNESS_MM, MIN_WIDTH_MM
+
+    below, above = shelf_pair()
+    region, frame = contact_region(below, above, np.zeros(3), np.array([0.0, 1.0, 0.0]))
+    patches = islands(region)
+    assert len(patches) == 2, "testkroppen ska ge två skilda kontaktytor"
+
+    # Var för sig pekar öarna åt olika håll - det är felet.
+    own = [aligned_frame(patch, frame)[0].v for patch in patches]
+    assert abs(float(np.dot(own[0], own[1]))) < 0.5
+
+    # Den gemensamma riktningen gäller båda.
+    angle = slide_angle(patches, MIN_WIDTH_MM, MIN_THICKNESS_MM)
+    shared, _ = rotate_frame(patches[0], frame, angle)
+    for patch in patches:
+        turned = shapely.affinity.rotate(patch, -np.degrees(angle), origin=(0.0, 0.0))
+        minx, miny, maxx, maxy = turned.bounds
+        assert maxx - minx >= MIN_WIDTH_MM
+        assert maxy - miny >= MIN_THICKNESS_MM
+    assert np.linalg.norm(shared.v) == pytest.approx(1.0, abs=1e-6)
+
+
+def test_dovetail_reports_one_slide_direction():
+    """Bygget rapporterar riktningen delarna skjuts ihop i."""
+    below, above = shelf_pair()
+    plane = Plane(origin=(0.0, 0.0, 0.0), normal=(0.0, 1.0, 0.0), axis=1)
+    result = build_joint(
+        below, above, plane, JointParams(joint_type="dovetail", stop_mm=6.0)
+    )
+    assert result.applied
+    assert result.joint_type == "dovetail"
+    assert result.slide_direction is not None
+    assert np.linalg.norm(result.slide_direction) == pytest.approx(1.0, abs=1e-6)
+    # Glidriktningen ligger i snittplanet, aldrig längs normalen.
+    assert abs(float(np.dot(result.slide_direction, [0.0, 1.0, 0.0]))) < 1e-6
+
+
+def test_slide_angle_prefers_direction_that_fits_every_island():
+    """En riktning som får plats i båda öarna slår en som bara passar den ena."""
+    import shapely
+
+    from stl_cutter.core.joints.base import slide_angle
+
+    wide = shapely.box(0.0, 0.0, 100.0, 10.0)   # bara 10 mm tjock i y
+    tall = shapely.box(200.0, 0.0, 210.0, 100.0)  # bara 10 mm tjock i x
+    angle = slide_angle([wide, tall], min_u=4.0, min_v=6.0)
+    for patch in (wide, tall):
+        turned = shapely.affinity.rotate(patch, -np.degrees(angle), origin=(0.0, 0.0))
+        minx, miny, maxx, maxy = turned.bounds
+        assert maxx - minx >= 4.0
+        assert maxy - miny >= 6.0
+
+
+def test_pins_are_not_slide_locked():
+    """Styrpinnar låser inte delarna i planet - ingen riktning att rapportera."""
+    below, above = split([40, 40, 40])
+    result = build_joint(below, above, PLANE, JointParams(joint_type="pins", count=2))
+    assert result.applied
+    assert result.slide_direction is None

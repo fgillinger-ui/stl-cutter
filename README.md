@@ -103,7 +103,7 @@ och en 3D-vy till höger.
      följer med medan du ändrar värdet.
    * **Fogtyp** — välj fritt, oavsett vad programmet föreslog
 
-   Under tabellen finns två inställningar för det markerade snittet:
+   Under tabellen finns tre inställningar för det markerade snittet:
 
    * **Lutning** — vinkla snittet ett exakt antal grader kring en vald axel.
      0 betyder rakt. Samma sak går att göra på fri hand med Shift och dra i
@@ -111,6 +111,15 @@ och en 3D-vy till höger.
    * **Stoppkant** — bara för laxstjärt. Stänger botten på spåret så att delen
      glider in och tar emot mot material i stället för att bara hållas av
      friktion. Se [docs/JOINTS.md](docs/JOINTS.md) för en bild.
+   * **Styrpinnar Ø** — pinnarnas tjocklek. Programmet föreslår en diameter ur
+     godstjockleken; här kan du prova dig fram. Gäller både fogtypen
+     styrpinnar och styrpinnar som lagts till som komplement till en annan
+     fog. På kommandoraden: `--pin-diameter MM`.
+
+   Laxstjärtar i samma snitt skjuts alltid ihop **åt samma håll** — riktningen
+   räknas ut för hela snittet och skrivs i loggen ("delarna skjuts ihop längs
+   Z"). I förhandsgranskningen målas fogytorna orange, så att du ser vad som
+   ska möta vad.
 
    **Eller ta tag i snittet direkt i 3D-vyn:**
 
