@@ -18,6 +18,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from .core import assembly as assembly_core
+from .core import holes as holes_core
 from .core import exporter, load as load_core, mesh_io, profile as profile_core
 from .core import project as project_core
 from .core import resize as resize_core
@@ -319,6 +320,60 @@ def build_parser() -> argparse.ArgumentParser:
         "--out", type=Path, default=Path("./ut"), help="Målmapp för profilfilerna."
     )
 
+    drill_cmd = sub.add_parser(
+        "drill",
+        help="Borra hål i en modell och skriv en ny fil.",
+    )
+    drill_cmd.add_argument("model", type=Path, help="Sökväg till STL- eller 3MF-fil.")
+    drill_cmd.add_argument(
+        "--hole",
+        action="append",
+        default=[],
+        metavar="X,Y,Z",
+        help="Var hålet börjar, i modellens koordinater. Upprepa för flera hål. "
+        "Negativa tal skrivs med likhetstecken: --hole=-10,0,6. Alla --hole får "
+        "samma diameter, djup och riktning; kör kommandot igen för hål av ett "
+        "annat slag.",
+    )
+    drill_cmd.add_argument(
+        "--direction",
+        default="-z",
+        choices=["-x", "+x", "-y", "+y", "-z", "+z"],
+        help="Åt vilket håll hålen borras. Standard: -z (rakt ned).",
+    )
+    drill_cmd.add_argument(
+        "--screw",
+        default="",
+        choices=["", *holes_core.SCREWS],
+        help="Metrisk skruv. Skruven bestämmer diametern och försänkningen.",
+    )
+    drill_cmd.add_argument(
+        "--head",
+        default="countersink",
+        choices=["countersink", "counterbore"],
+        help="Försänkt (konisk) eller planförsänkt (cylindrisk ficka för insex).",
+    )
+    drill_cmd.add_argument(
+        "--diameter",
+        type=float,
+        default=5.0,
+        metavar="MM",
+        help="Diameter när ingen skruv angetts. Standard: 5 mm.",
+    )
+    drill_cmd.add_argument(
+        "--depth",
+        type=float,
+        default=0.0,
+        metavar="MM",
+        help="Djup i mm. 0 (standard) betyder genomgående.",
+    )
+    drill_cmd.add_argument(
+        "--out",
+        type=Path,
+        default=None,
+        help="Målfil. Standard: <modell>_borrad.stl bredvid originalet.",
+    )
+
     project_cmd = sub.add_parser(
         "project",
         help="Kör om ett sparat projekt, eller visa vad det innehåller.",
@@ -577,6 +632,70 @@ def _cmd_export(args: argparse.Namespace) -> int:
     for path in written:
         x, y, z = mesh_io.load_mesh(path, repair=False).extents_mm
         print(f"  {path} ({x:.1f} x {y:.1f} x {z:.1f} mm)")
+    return 0
+
+
+def _parse_point(text: str) -> tuple[float, float, float]:
+    """"10,0,6" -> (10.0, 0.0, 6.0). Ett felskrivet värde sägs rakt ut."""
+    parts = [piece.strip() for piece in text.split(",")]
+    if len(parts) != 3:
+        raise ValueError(
+            f"--hole {text!r} ska vara tre tal: X,Y,Z - till exempel 10,0,6."
+        )
+    try:
+        return tuple(float(piece) for piece in parts)
+    except ValueError as error:
+        raise ValueError(f"--hole {text!r}: {error}") from error
+
+
+def _cmd_drill(args: argparse.Namespace) -> int:
+    """Borra hål och skriv en ny fil.
+
+    Hålen borras före allt annat, precis som i gränssnittet: en modell med hål
+    är den modell som snitten ska planeras för.
+    """
+    if not args.hole:
+        print(
+            "Fel: ange minst ett --hole X,Y,Z. Punkten ligger på ytan där hålet "
+            "börjar.",
+            file=sys.stderr,
+        )
+        return 2
+
+    info = mesh_io.load_mesh(args.model)
+    print(info.summary())
+
+    axis = "xyz".index(args.direction[1])
+    direction = holes_core.axis_direction(axis, positive=args.direction[0] == "+")
+
+    holes = []
+    for text in args.hole:
+        point = _parse_point(text)
+        if args.screw:
+            holes.append(
+                holes_core.screw_hole(
+                    point, direction, args.screw, depth_mm=args.depth, head=args.head
+                )
+            )
+        else:
+            holes.append(
+                holes_core.Hole(
+                    point=point,
+                    direction=direction,
+                    diameter_mm=args.diameter,
+                    depth_mm=args.depth,
+                )
+            )
+
+    print(f"\nBorrar {len(holes)} hål:")
+    for number, hole in enumerate(holes, start=1):
+        print(f"  {number}. {hole.describe()}")
+
+    drilled = holes_core.drill(info.mesh, holes)
+    out = args.out or args.model.with_name(f"{args.model.stem}_borrad.stl")
+    written = mesh_io.save_stl(drilled, out)
+    removed = float(abs(info.mesh.volume) - abs(drilled.volume))
+    print(f"\nSkrev {written} ({removed:.0f} mm³ material borta).")
     return 0
 
 
@@ -883,6 +1002,8 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_export(args)
         if args.command == "profile":
             return _cmd_profile(args)
+        if args.command == "drill":
+            return _cmd_drill(args)
         if args.command == "project":
             return _cmd_project(args)
         if args.command == "analyze-spans":

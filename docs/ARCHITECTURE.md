@@ -27,6 +27,7 @@ stl_cutter/
     recommender.py    # välj fogtyp utifrån snittytan och monteringsavsikt  [fas 2]
     resize.py         # ändra ett mått utan att deformera godset            [fas 3B]
     assembly.py       # flera objekt i filen som ändrar mått tillsammans
+    holes.py          # borra hål: cylinder + försänkning, subtraherade
     orient.py         # vänd en kapad del platt inför utskrift
     load.py           # var en belastad modell helst inte ska kapas
     profile.py        # slicerprofil (JSON) med inställningarna för last
@@ -648,6 +649,26 @@ fönstret som i det. Varje flik har kvar en `QScrollArea` som säkerhetsnät fö
 små skärmar, men i normalfallet syns hela fliken. Fliken *4b. Delar* fylls av
 `_fill_part_table()` efter en förhandsgranskning: namn (blir filnamnet, via
 `exporter.safe_name()`) och färg per del.
+
+**Hål** — `core/holes.py` bygger varje hål som en solid och drar bort dem i ett
+svep: en cylinder, plus en kon (försänkt skalle) eller en vidare cylinder
+(planförsänkt). Axel och försänkning **unionas** innan de subtraheras; läggs de
+bara i samma mesh blir den självskärande, och booleanmotorn räknar då överlappet
+två gånger och tar bort för mycket - felet syntes som 344 mm³ borta där 281
+väntades. Ett genomgående hål mäts mot modellens diagonal, så det går igenom
+oavsett var det börjar och åt vilket håll det pekar.
+
+Riktningen provas per hål innan booleanen körs: en punkt en halv millimeter in
+längs riktningen måste ligga *inuti* modellen (`mesh.contains`). Annars pekar
+hålet ut ur godset, och då tar nyckeln bara bort en hårfin skiva vid ytan - en
+volymkontroll efteråt hade knappt märkt det, men hålet är lika fel för det.
+Felet namnger vilket hål det gäller och med vilka mått.
+
+Hålen borras **före** snitten: ett hål tvärs över ett snitt ska finnas i båda
+delarna, och snittanalysen ska mäta modellen som den faktiskt blir. I
+gränssnittet placeras de antingen med ett klick i vyn (`ModelView.hole_mode` →
+`hole_requested` → `holes.surface_hole()`, som skjuter en stråle och tar ytans
+normal inåt) eller genom att skriva in siffrorna i tabellen.
 
 **Fogen i förhandsgranskningen** — delarnas färger är ljusa och lågmättade
 (`PART_SATURATION`, `PART_VALUE`): `shaded`-skuggningen mörknar allt som vetter

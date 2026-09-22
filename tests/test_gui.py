@@ -79,6 +79,7 @@ def test_window_starts_with_the_workflow_in_order(window):
 
     assert labels == [
         "1. Modell",
+        "1c. Hål",
         "2. Skrivare",
         "3. Snitt",
         "4. Delar",
@@ -89,6 +90,7 @@ def test_window_starts_with_the_workflow_in_order(window):
     assert titles == {
         "1. Modell",
         "1b. Ändra mått",
+        "1c. Hål",
         "2. Skrivare",
         "3. Montering",
         "3b. Belastning",
@@ -107,8 +109,9 @@ def test_each_step_is_its_own_tab(window):
         return [box.title() for box in page.findChildren(QGroupBox)]
 
     assert titles_on(0) == ["1. Modell", "1b. Ändra mått"]
-    assert titles_on(1) == ["2. Skrivare", "3. Montering", "3b. Belastning"]
-    assert titles_on(3) == ["4b. Delar"]
+    assert titles_on(1) == ["1c. Hål"]
+    assert titles_on(2) == ["2. Skrivare", "3. Montering", "3b. Belastning"]
+    assert titles_on(4) == ["4b. Delar"]
 
 
 def test_printer_dropdown_is_filled_and_fills_the_fields(window):
@@ -2637,3 +2640,148 @@ def test_reopening_can_be_switched_off(qapp, window, model_file):
 
     assert window.settings.reopen_last_model is False
     assert window.mesh_info is None
+
+
+# --------------------------------------------------------------------------
+# Hål
+# --------------------------------------------------------------------------
+
+
+def test_the_holes_tab_is_in_the_workflow(window):
+    labels = [window.steps.tabText(i) for i in range(window.steps.count())]
+
+    assert "1c. Hål" in labels
+    # Hålen hör till modellen och borras före snitten - alltså före Skrivare.
+    assert labels.index("1c. Hål") < labels.index("2. Skrivare")
+
+
+def test_clicking_in_the_view_places_a_hole(qapp, window, model_file):
+    """Ett klick i vyn ska ge ett hål rakt in i ytan man pekar på."""
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+    bounds = window.mesh_info.mesh.bounds
+
+    window.place_hole_button.setChecked(True)
+    assert window.view.hole_mode
+    window.view.hole_requested.emit(
+        np.array([0.0, 0.0, bounds[1][2] + 100.0]), np.array([0.0, 0.0, -1.0])
+    )
+
+    assert len(window.holes) == 1
+    hole = window.holes[0]
+    assert hole.point[2] == pytest.approx(bounds[1][2])
+    assert hole.unit_direction == pytest.approx((0.0, 0.0, -1.0))
+    assert window.hole_table.rowCount() == 1
+    assert window.view.showing_holes
+
+
+def test_a_click_that_misses_the_model_is_explained(qapp, window, model_file):
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+
+    window.view.hole_requested.emit(
+        np.array([1e4, 1e4, 1e4]), np.array([0.0, 0.0, -1.0])
+    )
+
+    assert window.holes == []
+    assert "träffade inte" in window.status_box.toPlainText()
+
+
+def test_a_hole_can_be_typed_in_instead_of_clicked(qapp, window, model_file):
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+
+    window.add_hole()
+    window.hole_table.item(0, 1).setText("12,5")  # svensk decimalkomma
+    window.hole_table.item(0, 6).setText("8")
+
+    hole = window.holes[0]
+    assert hole.point[0] == pytest.approx(12.5)
+    assert hole.depth_mm == pytest.approx(8.0)
+    assert not hole.through
+
+
+def test_a_hole_too_small_to_print_keeps_the_old_value(qapp, window, model_file):
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+    window.add_hole()
+    before = window.holes[0].diameter_mm
+
+    window.hole_table.item(0, 5).setText("0.2")
+
+    assert window.holes[0].diameter_mm == pytest.approx(before)
+    assert "går att skriva ut" in window.status_box.toPlainText()
+
+
+def test_the_screw_decides_the_diameter(qapp, window, model_file):
+    from stl_cutter.core.holes import SCREWS
+
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+    window.screw_combo.setCurrentIndex(window.screw_combo.findData("M5"))
+
+    window.add_hole()
+
+    assert window.holes[0].diameter_mm == pytest.approx(SCREWS["M5"].clearance_mm)
+    assert window.holes[0].screw == "M5"
+
+
+def test_drilling_removes_material_and_can_be_undone(qapp, window, model_file):
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+    before = window.mesh_info.volume_mm3
+    window.add_hole()
+
+    window.drill_holes()
+    wait_for_worker(qapp, window)
+
+    assert window.mesh_info.volume_mm3 < before
+    # Hålen sitter i modellen nu - listan är tom, annars borras de igen.
+    assert window.holes == []
+    assert window.undo_drill_button.isEnabled()
+
+    window.undo_drill()
+
+    assert window.mesh_info.volume_mm3 == pytest.approx(before)
+    assert not window.undo_drill_button.isEnabled()
+
+
+def test_drilling_clears_a_plan_made_before_the_holes(qapp, window, model_file):
+    """Snitten planerades för en annan modell och gäller inte längre."""
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+    window.start_analysis()
+    wait_for_worker(qapp, window)
+    assert window.plan is not None
+
+    window.add_hole()
+    window.drill_holes()
+    wait_for_worker(qapp, window)
+
+    assert window.plan is None
+    assert window.cut_table.rowCount() == 0
+
+
+def test_holes_are_saved_with_the_project(qapp, window, model_file, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QFileDialog
+
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+    window.screw_combo.setCurrentIndex(window.screw_combo.findData("M3"))
+    window.add_hole()
+
+    path = tmp_path / "hal.stlcut"
+    monkeypatch.setattr(
+        QFileDialog, "getSaveFileName", staticmethod(lambda *a, **k: (str(path), ""))
+    )
+    window.save_project()
+    monkeypatch.setattr(
+        QFileDialog, "getOpenFileName", staticmethod(lambda *a, **k: (str(path), ""))
+    )
+    window.holes = []
+    window.open_project()
+    wait_for_worker(qapp, window)
+
+    assert len(window.holes) == 1
+    assert window.holes[0].screw == "M3"
+    assert window.hole_table.rowCount() == 1
