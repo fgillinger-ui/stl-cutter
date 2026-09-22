@@ -62,6 +62,12 @@ def colour_rgba(value, fallback=JOINT_COLOR) -> tuple[float, float, float, float
         return tuple(fallback)
     return (red, green, blue, 1.0)
 
+#: Planerade hål ritas som genomskinliga pinnar i modellen.
+HOLE_MARKER_COLOR = (1.0, 0.25, 0.25, 0.85)
+
+#: Så lång markören görs för ett genomgående hål - djupet är ju inte bestämt.
+HOLE_MARKER_LENGTH_MM = 25.0
+
 #: Hur långt från snittet en yta räknas som en del av fogen. Täcker med marginal
 #: det djup en laxstjärt eller styrpinne sticker in.
 JOINT_BAND_MM = 15.0
@@ -286,6 +292,20 @@ def bed_placement(bounds) -> tuple[float, float, float]:
     return float(centre[0]), float(centre[1]), float(bounds[0][2])
 
 
+def hole_marker(hole, length_mm: float = HOLE_MARKER_LENGTH_MM):
+    """Pinnen som visar ett planerat hål: rätt läge, riktning och diameter."""
+    radius = max(float(hole.diameter_mm) / 2.0, 0.5)
+    length = float(hole.depth_mm) if hole.depth_mm > 0 else float(length_mm)
+    marker = trimesh.creation.cylinder(radius=radius, height=length, sections=24)
+    # Cylindern byggs kring sin mitt; skjut den så att den börjar vid ytan.
+    marker.apply_translation([0.0, 0.0, length / 2.0])
+    marker.apply_transform(
+        trimesh.geometry.align_vectors([0.0, 0.0, 1.0], np.asarray(hole.unit_direction))
+    )
+    marker.apply_translation(np.asarray(hole.point, dtype=float))
+    return marker
+
+
 def mesh_data(mesh: trimesh.Trimesh, colors=None) -> gl.MeshData:
     return gl.MeshData(
         vertexes=np.asarray(mesh.vertices, dtype=float),
@@ -307,6 +327,8 @@ class ModelView(gl.GLViewWidget):
     plane_tilted = Signal(int, float, float)
     #: (snittets index) - dragningen är klar, dags att analysera om
     plane_released = Signal(int)
+    #: (strålens startpunkt, riktning) - ett klick när hålläget är på
+    hole_requested = Signal(object, object)
 
     def __init__(self, parent=None, light_background: bool = True):
         super().__init__(parent)
@@ -320,6 +342,10 @@ class ModelView(gl.GLViewWidget):
         self._bed_item = None
         self._bed_visible = False
         self._printer = None
+        self._hole_items: list = []
+        #: Sant medan man placerar hål: ett klick blir då ett hål i stället för
+        #: en vridning av modellen.
+        self.hole_mode = False
         self._explode_mm = 0.0
         self._press_pos = None
         self._planes: list = []
@@ -509,6 +535,36 @@ class ModelView(gl.GLViewWidget):
             item.translate(*offset)
         self.place_bed()
 
+    # -- hålen ------------------------------------------------------------
+
+    def show_holes(self, holes, colour=HOLE_MARKER_COLOR) -> None:
+        """Rita var hålen ska borras, innan de är borrade.
+
+        Markören är en pinne i hålets egen riktning och diameter: den visar
+        inte bara var hålet hamnar utan också åt vilket håll det går, vilket är
+        halva frågan när man pekar på en lutande yta.
+        """
+        self.clear_holes()
+        for hole in holes or []:
+            item = gl.GLMeshItem(
+                meshdata=mesh_data(hole_marker(hole)),
+                smooth=False,
+                shader="shaded",
+                color=colour,
+                glOptions="additive",
+            )
+            self.addItem(item)
+            self._hole_items.append(item)
+
+    def clear_holes(self) -> None:
+        for item in self._hole_items:
+            self.removeItem(item)
+        self._hole_items = []
+
+    @property
+    def showing_holes(self) -> bool:
+        return bool(self._hole_items)
+
     # -- byggplattan ------------------------------------------------------
 
     def set_bed(self, printer, visible: bool) -> None:
@@ -615,6 +671,11 @@ class ModelView(gl.GLViewWidget):
         position = event.position() if hasattr(event, "position") else event.localPos()
         self._press_pos = position
         self._drag = None
+
+        if self.hole_mode and event.button() == Qt.LeftButton:
+            origin, direction = self.ray_at(position.x(), position.y())
+            self.hole_requested.emit(origin, direction)
+            return
 
         if event.button() in (Qt.LeftButton, Qt.RightButton):
             hit = self.plane_at(position.x(), position.y())
@@ -762,6 +823,7 @@ class ModelView(gl.GLViewWidget):
         self.clear_parts()
         self.clear_planes()
         self.clear_spans()
+        self.clear_holes()
         if self._model_item is not None:
             self.removeItem(self._model_item)
             self._model_item = None

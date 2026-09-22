@@ -46,6 +46,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..core import assembly as assembly_core
+from ..core import holes as holes_core
 from ..core import exporter, load as load_core, mesh_io, profile as profile_core
 from ..core import project as project_core
 from ..core import resize as resize_core
@@ -107,6 +108,25 @@ DEFAULT_STOP_MM = 6.0
 #: Hur långt delarna sprängs isär automatiskt vid förhandsgranskning.
 DEFAULT_PREVIEW_EXPLODE_MM = 40
 
+#: Diametern ett hål får när ingen skruv är vald. 5 mm är ett vanligt
+#: genomgångshål och ett läsbart startvärde.
+DEFAULT_HOLE_DIAMETER_MM = 5.0
+
+HOLE_COLUMN_INDEX, HOLE_COLUMN_X, HOLE_COLUMN_Y, HOLE_COLUMN_Z = range(4)
+HOLE_COLUMN_DIRECTION, HOLE_COLUMN_DIAMETER, HOLE_COLUMN_DEPTH = range(4, 7)
+
+#: Riktningarna som går att välja i tabellen. "Från ytan" står kvar för ett
+#: hål som placerats med ett klick på en lutande yta - den riktningen finns
+#: inte bland axlarna.
+HOLE_DIRECTIONS = [
+    ("Nedåt (−Z)", (0.0, 0.0, -1.0)),
+    ("Uppåt (+Z)", (0.0, 0.0, 1.0)),
+    ("Vänster (−X)", (-1.0, 0.0, 0.0)),
+    ("Höger (+X)", (1.0, 0.0, 0.0)),
+    ("Framåt (−Y)", (0.0, -1.0, 0.0)),
+    ("Bakåt (+Y)", (0.0, 1.0, 0.0)),
+]
+
 #: Hur mycket ett plan vinklas per pixel vid Shift+dragning.
 TILT_DEGREES_PER_PIXEL = 0.35
 
@@ -132,6 +152,10 @@ class MainWindow(QMainWindow):
         self.worker: Worker | None = None
         #: Sant medan tabellen ritas om, så att signaler inte studsar tillbaka.
         self._filling = False
+        #: Hålen som ska borras, innan de är borrade.
+        self.holes: list = []
+        #: Modellen som den såg ut före borrningen, för Ångra.
+        self.mesh_before_drill = None
         #: Egna namn och färger per delindex. Namnet blir filnamnet vid export.
         self.part_names: dict[int, str] = {}
         self.part_colours: dict[int, tuple[float, float, float, float]] = {}
@@ -167,6 +191,7 @@ class MainWindow(QMainWindow):
         self.steps.setMinimumWidth(470)
         for label, sections in (
             ("1. Modell", [self._section_model(), self._section_resize()]),
+            ("1c. Hål", [self._section_holes()]),
             (
                 "2. Skrivare",
                 [self._section_printer(), self._section_assembly(), self._section_load()],
@@ -333,6 +358,112 @@ class MainWindow(QMainWindow):
         self.undo_resize_button.setEnabled(False)
         button_row.addWidget(self.undo_resize_button)
         layout.addLayout(button_row)
+        return box
+
+    def _section_holes(self) -> QGroupBox:
+        """1c. Hål - borras före snitten, så att de finns i rätt del efteråt."""
+        box = QGroupBox("1c. Hål")
+        layout = QVBoxLayout(box)
+
+        hint = QLabel(
+            "Klicka <b>Placera hål i vyn</b> och peka på modellen: hålet borras "
+            "rakt in i ytan du pekar på. Eller lägg till ett hål och skriv in "
+            "koordinaterna i tabellen. Hålen borras före snitten."
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: gray;")
+        layout.addWidget(hint)
+
+        # Vad nästa hål ska bli.
+        kind_row = QHBoxLayout()
+        kind_row.addWidget(QLabel("Skruv:"))
+        self.screw_combo = QComboBox()
+        self.screw_combo.addItem("Inget - eget mått", "")
+        for name in holes_core.SCREWS:
+            spec = holes_core.SCREWS[name]
+            self.screw_combo.addItem(f"{name} (Ø {spec.clearance_mm:.1f})", name)
+        self.screw_combo.setCurrentIndex(self.screw_combo.findData("M4"))
+        self.screw_combo.currentIndexChanged.connect(self._on_hole_kind_changed)
+        kind_row.addWidget(self.screw_combo)
+
+        self.head_combo = QComboBox()
+        self.head_combo.addItem("Försänkt skalle", "countersink")
+        self.head_combo.addItem("Planförsänkt (insex)", "counterbore")
+        self.head_combo.setToolTip(
+            "Försänkt: konisk, skallen går i jämnt med ytan.\n"
+            "Planförsänkt: cylindrisk ficka för en insexskalle."
+        )
+        kind_row.addWidget(self.head_combo)
+        kind_row.addStretch(1)
+        layout.addLayout(kind_row)
+
+        size_row = QHBoxLayout()
+        size_row.addWidget(QLabel("Diameter:"))
+        self.hole_diameter = self._spin(1.0, 60.0, " mm", decimals=1, step=0.5)
+        self.hole_diameter.setValue(DEFAULT_HOLE_DIAMETER_MM)
+        self.hole_diameter.setToolTip(
+            "Gäller när ingen skruv är vald - skruven bestämmer annars måttet."
+        )
+        size_row.addWidget(self.hole_diameter)
+
+        self.through_check = QCheckBox("Genomgående")
+        self.through_check.setChecked(True)
+        self.through_check.stateChanged.connect(self._on_hole_kind_changed)
+        size_row.addWidget(self.through_check)
+
+        size_row.addWidget(QLabel("Djup:"))
+        self.hole_depth = self._spin(0.5, 500.0, " mm", decimals=1, step=1.0)
+        self.hole_depth.setValue(10.0)
+        self.hole_depth.setEnabled(False)
+        size_row.addWidget(self.hole_depth)
+        size_row.addStretch(1)
+        layout.addLayout(size_row)
+
+        self.place_hole_button = QPushButton("Placera hål i vyn")
+        self.place_hole_button.setCheckable(True)
+        self.place_hole_button.setEnabled(False)
+        self.place_hole_button.setToolTip(
+            "Slå på och klicka på modellen. Hålet borras vinkelrätt in i ytan "
+            "du pekar på. Slå av för att vrida modellen igen."
+        )
+        self.place_hole_button.toggled.connect(self._on_place_holes_toggled)
+        layout.addWidget(self.place_hole_button)
+
+        self.hole_table = QTableWidget(0, 7)
+        self.hole_table.setHorizontalHeaderLabels(
+            ["Hål", "X", "Y", "Z", "Riktning", "Ø", "Djup"]
+        )
+        self.hole_table.verticalHeader().setVisible(False)
+        self.hole_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.hole_table.setMinimumHeight(120)
+        self.hole_table.itemChanged.connect(self._on_hole_cell_changed)
+        layout.addWidget(self.hole_table)
+
+        buttons = QHBoxLayout()
+        self.add_hole_button = QPushButton("Lägg till hål")
+        self.add_hole_button.setEnabled(False)
+        self.add_hole_button.setToolTip("Lägg ett hål mitt på modellens ovansida")
+        self.add_hole_button.clicked.connect(self.add_hole)
+        buttons.addWidget(self.add_hole_button)
+
+        self.remove_hole_button = QPushButton("Ta bort hål")
+        self.remove_hole_button.setEnabled(False)
+        self.remove_hole_button.clicked.connect(self.remove_hole)
+        buttons.addWidget(self.remove_hole_button)
+
+        self.drill_button = QPushButton("Borra hålen")
+        self.drill_button.setEnabled(False)
+        self.drill_button.setToolTip("Ta bort materialet ur modellen - går att ångra")
+        self.drill_button.clicked.connect(self.drill_holes)
+        buttons.addWidget(self.drill_button)
+
+        self.undo_drill_button = QPushButton("Ångra borrning")
+        self.undo_drill_button.setEnabled(False)
+        self.undo_drill_button.clicked.connect(self.undo_drill)
+        buttons.addWidget(self.undo_drill_button)
+        layout.addLayout(buttons)
+
+        self._on_hole_kind_changed()
         return box
 
     def _section_printer(self) -> QGroupBox:
@@ -691,6 +822,7 @@ class MainWindow(QMainWindow):
         self.view.plane_dragged.connect(self._on_plane_dragged)
         self.view.plane_tilted.connect(self._on_plane_tilted)
         self.view.plane_released.connect(self._on_plane_released)
+        self.view.hole_requested.connect(self._on_hole_clicked)
         layout.addWidget(self.view, 1)
 
         controls = QHBoxLayout()
@@ -988,6 +1120,13 @@ class MainWindow(QMainWindow):
         self.part_colours.clear()
         self.part_table.setRowCount(0)
         self.cut_table.setRowCount(0)
+        self.holes = []
+        self.mesh_before_drill = None
+        self.undo_drill_button.setEnabled(False)
+        self.place_hole_button.setChecked(False)
+        self.place_hole_button.setEnabled(True)
+        self.add_hole_button.setEnabled(True)
+        self._refresh_holes()
         self.cut_button.setEnabled(False)
         self.preview_button.setEnabled(False)
         self.analyse_button.setEnabled(True)
@@ -1545,6 +1684,7 @@ class MainWindow(QMainWindow):
             split_bodies=self.split_bodies_check.isChecked(),
             output_dir=self.settings.last_output_dir,
             base_profile=self.settings.base_profile,
+            holes=[replace(hole) for hole in self.holes],
             part_names=dict(self.part_names),
             part_colours={
                 index: "#%02X%02X%02X"
@@ -1657,6 +1797,13 @@ class MainWindow(QMainWindow):
             self.output_label.setText(project.output_dir)
         if project.base_profile:
             self.settings.base_profile = project.base_profile
+
+        self.holes = [replace(hole) for hole in project.holes]
+        self.mesh_before_drill = None
+        self.undo_drill_button.setEnabled(False)
+        self.place_hole_button.setEnabled(True)
+        self.add_hole_button.setEnabled(True)
+        self._refresh_holes()
 
         self.part_names = dict(project.part_names)
         self.part_colours = {
@@ -2558,6 +2705,270 @@ class MainWindow(QMainWindow):
         )
         self._fill_part_table(self.result)
         self.on_bed_toggled()
+
+    # ------------------------------------------------------------------
+    # 1c. Hål
+    # ------------------------------------------------------------------
+
+    def _current_hole_kind(self) -> tuple[str, str, float, float]:
+        """Vad nästa hål ska bli: (skruv, skalle, diameter, djup)."""
+        screw = self.screw_combo.currentData() or ""
+        head = self.head_combo.currentData() or "countersink"
+        # Är en skruv vald är det skruven som bestämmer måttet, inte rutan -
+        # annars kunde ett "M4-hål" bli 5 mm för att rutan stod kvar på det.
+        diameter = (
+            holes_core.SCREWS[screw].clearance_mm if screw else float(self.hole_diameter.value())
+        )
+        depth = 0.0 if self.through_check.isChecked() else float(self.hole_depth.value())
+        return screw, head, diameter, depth
+
+    def _on_hole_kind_changed(self, *_args) -> None:
+        screw = self.screw_combo.currentData() or ""
+        # Skruven bestämmer diametern, så rutan säger vad det blir men går
+        # inte att ändra i - annars vore det inte ett M4-hål längre.
+        self.hole_diameter.setEnabled(not screw)
+        self.head_combo.setEnabled(bool(screw))
+        if screw:
+            self.hole_diameter.setValue(holes_core.SCREWS[screw].clearance_mm)
+        self.hole_depth.setEnabled(not self.through_check.isChecked())
+
+    def _on_place_holes_toggled(self, on: bool) -> None:
+        """Slå på och av läget där ett klick i vyn blir ett hål."""
+        self.view.hole_mode = bool(on)
+        self.view.setCursor(Qt.CrossCursor if on else Qt.ArrowCursor)
+        self.status(
+            "Peka på modellen där hålet ska sitta."
+            if on
+            else "Hålplaceringen avslagen - musen vrider modellen igen."
+        )
+
+    def _on_hole_clicked(self, origin, direction) -> None:
+        """Ett klick i vyn: borra rakt in i ytan som pekades ut."""
+        if self.mesh_info is None:
+            return
+        screw, head, diameter, depth = self._current_hole_kind()
+        try:
+            hole = holes_core.surface_hole(
+                self.mesh_info.mesh,
+                origin,
+                direction,
+                diameter_mm=diameter,
+                depth_mm=depth,
+                screw=screw,
+                head=head,
+            )
+        except holes_core.HoleError as error:
+            self.status(str(error), error=True)
+            return
+        self.holes.append(hole)
+        self.status(f"Hål {len(self.holes)}: {hole.describe()}")
+        self._refresh_holes()
+
+    def add_hole(self) -> None:
+        """Lägg ett hål mitt på modellens ovansida, att flytta i tabellen."""
+        if self.mesh_info is None:
+            return
+        bounds = np.asarray(self.mesh_info.mesh.bounds, dtype=float)
+        centre = (bounds[0] + bounds[1]) / 2.0
+        screw, head, diameter, depth = self._current_hole_kind()
+        self.holes.append(
+            holes_core.Hole(
+                point=(float(centre[0]), float(centre[1]), float(bounds[1][2])),
+                direction=(0.0, 0.0, -1.0),
+                diameter_mm=diameter,
+                depth_mm=depth,
+                screw=screw,
+                head=head,
+            )
+        )
+        self.status(f"Hål {len(self.holes)}: {self.holes[-1].describe()}")
+        self._refresh_holes()
+
+    def remove_hole(self) -> None:
+        row = self.hole_table.currentRow()
+        if not (0 <= row < len(self.holes)):
+            self.status("Markera ett hål i tabellen först.", error=True)
+            return
+        removed = self.holes.pop(row)
+        self.status(f"Tog bort hålet: {removed.describe()}")
+        self._refresh_holes()
+
+    def _refresh_holes(self) -> None:
+        """Rita om tabellen och markörerna i vyn."""
+        self._fill_hole_table()
+        self.view.show_holes(self.holes)
+        has_holes = bool(self.holes)
+        self.remove_hole_button.setEnabled(has_holes)
+        self.drill_button.setEnabled(has_holes and self.mesh_info is not None)
+
+    def _fill_hole_table(self) -> None:
+        self._filling = True
+        try:
+            self.hole_table.setRowCount(len(self.holes))
+            for row, hole in enumerate(self.holes):
+                number = QTableWidgetItem(f"{row + 1}")
+                number.setFlags(Qt.ItemIsEnabled)
+                number.setToolTip(hole.describe())
+                self.hole_table.setItem(row, HOLE_COLUMN_INDEX, number)
+
+                for column, value in zip(
+                    (HOLE_COLUMN_X, HOLE_COLUMN_Y, HOLE_COLUMN_Z), hole.point
+                ):
+                    self.hole_table.setItem(row, column, QTableWidgetItem(f"{value:.1f}"))
+
+                combo = QComboBox()
+                for label, vector in HOLE_DIRECTIONS:
+                    combo.addItem(label, vector)
+                match = self._direction_index(hole)
+                if match is None:
+                    combo.insertItem(0, "Från ytan", tuple(hole.direction))
+                    combo.setCurrentIndex(0)
+                else:
+                    combo.setCurrentIndex(match)
+                combo.currentIndexChanged.connect(partial(self._on_hole_direction_changed, row))
+                self.hole_table.setCellWidget(row, HOLE_COLUMN_DIRECTION, combo)
+
+                self.hole_table.setItem(
+                    row, HOLE_COLUMN_DIAMETER, QTableWidgetItem(f"{hole.diameter_mm:.1f}")
+                )
+                depth = QTableWidgetItem(
+                    "genom" if hole.through else f"{hole.depth_mm:.1f}"
+                )
+                depth.setToolTip("Skriv ett djup i mm, eller 0 för genomgående.")
+                self.hole_table.setItem(row, HOLE_COLUMN_DEPTH, depth)
+        finally:
+            self._filling = False
+        self.hole_table.resizeColumnsToContents()
+
+    @staticmethod
+    def _direction_index(hole) -> int | None:
+        """Vilken av de fasta riktningarna hålet har, om någon."""
+        current = np.asarray(hole.direction, dtype=float)
+        length = float(np.linalg.norm(current))
+        if length < 1e-9:
+            return None
+        current = current / length
+        for index, (_label, vector) in enumerate(HOLE_DIRECTIONS):
+            if np.allclose(current, np.asarray(vector, dtype=float), atol=1e-6):
+                return index
+        return None
+
+    def _on_hole_direction_changed(self, row: int, *_args) -> None:
+        if self._filling or not (0 <= row < len(self.holes)):
+            return
+        combo = self.hole_table.cellWidget(row, HOLE_COLUMN_DIRECTION)
+        if combo is None:
+            return
+        self.holes[row].direction = tuple(float(v) for v in combo.currentData())
+        self.view.show_holes(self.holes)
+        self.status(f"Hål {row + 1}: {self.holes[row].describe()}")
+
+    def _on_hole_cell_changed(self, item) -> None:
+        """Siffrorna i tabellen: läge, diameter och djup."""
+        if self._filling:
+            return
+        row, column = item.row(), item.column()
+        if not (0 <= row < len(self.holes)):
+            return
+        hole = self.holes[row]
+        text = item.text().strip().replace(",", ".")
+
+        try:
+            if column in (HOLE_COLUMN_X, HOLE_COLUMN_Y, HOLE_COLUMN_Z):
+                point = list(hole.point)
+                point[column - HOLE_COLUMN_X] = float(text)
+                hole.point = tuple(point)
+            elif column == HOLE_COLUMN_DIAMETER:
+                diameter = float(text)
+                if diameter < holes_core.MIN_DIAMETER_MM:
+                    raise ValueError(
+                        f"minst {holes_core.MIN_DIAMETER_MM:.1f} mm går att skriva ut"
+                    )
+                hole.diameter_mm = diameter
+                # Ett eget mått är inte längre skruvens mått.
+                if hole.screw and abs(diameter - holes_core.SCREWS[hole.screw].clearance_mm) > 1e-6:
+                    hole.screw = ""
+            elif column == HOLE_COLUMN_DEPTH:
+                hole.depth_mm = 0.0 if text in ("", "genom", "0") else float(text)
+            else:
+                return
+        except ValueError as error:
+            self.status(f"Hål {row + 1}: {error} - värdet behölls.", error=True)
+            self._fill_hole_table()
+            return
+
+        self.status(f"Hål {row + 1}: {hole.describe()}")
+        self._fill_hole_table()
+        self.view.show_holes(self.holes)
+
+    def drill_holes(self) -> None:
+        """Borra hålen ur modellen. Går att ångra."""
+        if self.mesh_info is None or not self.holes:
+            return
+        mesh = self.mesh_info.mesh
+        holes = list(self.holes)
+
+        def work(progress=None):
+            return holes_core.drill(mesh, holes, progress=progress)
+
+        self._start(work, self._on_drilled, f"Borrar {len(holes)} hål…")
+
+    def _on_drilled(self, drilled) -> None:
+        self.mesh_before_drill = self.mesh_info.mesh
+        self.mesh_info = replace(
+            self.mesh_info,
+            mesh=drilled,
+            watertight=bool(drilled.is_watertight),
+            winding_consistent=bool(drilled.is_winding_consistent),
+            volume_mm3=float(abs(drilled.volume)),
+            extents_mm=tuple(float(v) for v in drilled.extents),
+            open_edges=mesh_io.open_edge_count(drilled),
+        )
+        self.status(f"Borrade {len(self.holes)} hål.")
+        if not drilled.is_watertight:
+            self.status(
+                "Modellen är inte längre sluten efter borrningen - kontrollera "
+                "den i slicern innan du skriver ut.",
+                error=True,
+            )
+        # Hålen sitter i modellen nu; listan töms så att de inte borras igen.
+        self.holes = []
+        self.plan = None
+        self.result = None
+        self.spans = None
+        self.cut_table.setRowCount(0)
+        self.cut_button.setEnabled(False)
+        self.preview_button.setEnabled(False)
+        self.undo_drill_button.setEnabled(True)
+        self._refresh_holes()
+        self.view.show_model(self.mesh_info.mesh)
+        self.on_bed_toggled()
+        self._update_size_fields()
+        self.status(self.mesh_info.summary())
+
+    def undo_drill(self) -> None:
+        """Lägg tillbaka modellen som den var före borrningen."""
+        if self.mesh_before_drill is None:
+            return
+        mesh = self.mesh_before_drill
+        self.mesh_info = replace(
+            self.mesh_info,
+            mesh=mesh,
+            watertight=bool(mesh.is_watertight),
+            winding_consistent=bool(mesh.is_winding_consistent),
+            volume_mm3=float(abs(mesh.volume)),
+            extents_mm=tuple(float(v) for v in mesh.extents),
+            open_edges=mesh_io.open_edge_count(mesh),
+        )
+        self.mesh_before_drill = None
+        self.undo_drill_button.setEnabled(False)
+        self.plan = None
+        self.result = None
+        self.cut_table.setRowCount(0)
+        self.view.show_model(mesh)
+        self.on_bed_toggled()
+        self._update_size_fields()
+        self.status("Borrningen ångrad.")
 
     def export_model(self) -> None:
         """Skriv modellen som den är just nu, utan att kapa den.

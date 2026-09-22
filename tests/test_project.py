@@ -258,3 +258,34 @@ def test_unreadable_part_indices_are_skipped_not_fatal(tmp_path, small_box, prin
 
     assert _by_index({"1": "a", "x": "b", None: "c"}) == {1: "a"}
     assert _by_index(None) == {}
+
+
+def test_holes_survive_a_project_roundtrip(tmp_path, small_box, printer):
+    """Ett hål som inte hunnit borras ska finnas kvar nästa gång."""
+    from stl_cutter.core.holes import screw_hole
+    from stl_cutter.core.project import Project, load_project, save_project
+
+    project = Project(
+        mesh=small_box,
+        printer=printer,
+        holes=[screw_hole((1.0, 2.0, 3.0), (0.0, 0.0, -1.0), "M5", depth_mm=6.0)],
+    )
+    path = save_project(project, tmp_path / "hal.stlcut")
+
+    back = load_project(path)
+
+    assert len(back.holes) == 1
+    hole = back.holes[0]
+    assert hole.screw == "M5"
+    assert hole.depth_mm == pytest.approx(6.0)
+    assert hole.point == pytest.approx((1.0, 2.0, 3.0))
+    # Hålen står med i sammanfattningen, annars syns de inte i --info.
+    assert "Hål att borra: 1 st" in back.describe()
+
+
+def test_a_project_without_holes_opens_as_before(tmp_path, small_box, printer):
+    from stl_cutter.core.project import Project, load_project, save_project
+
+    path = save_project(Project(mesh=small_box, printer=printer), tmp_path / "utan.stlcut")
+
+    assert load_project(path).holes == []

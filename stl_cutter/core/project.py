@@ -38,6 +38,7 @@ from pathlib import Path
 
 import trimesh
 
+from .holes import Hole
 from .load import LoadCase
 from .printers import PrinterProfile
 
@@ -120,6 +121,8 @@ class Project:
     output_dir: str = ""
     base_profile: str = ""
     saved: str = ""
+    #: Hål som ännu inte borrats. Borrade hål sitter redan i modellen.
+    holes: list = field(default_factory=list)
     #: Egna namn på delarna, per delindex. Namnet blir filnamnet vid export.
     part_names: dict[int, str] = field(default_factory=dict)
     #: Egna färger på delarna i 3D-vyn, per delindex, som "#RRGGBB".
@@ -146,6 +149,7 @@ class Project:
             "base_profile": self.base_profile,
             # Nycklarna blir strängar i JSON och görs om till heltal vid
             # inläsning - ett delindex är ett nummer, inte en text.
+            "holes": [hole.to_dict() for hole in self.holes],
             "part_names": {str(k): v for k, v in self.part_names.items()},
             "part_colours": {str(k): v for k, v in self.part_colours.items()},
         }
@@ -163,6 +167,10 @@ class Project:
             from .load import describe_load_case
 
             lines.append(f"Last: {describe_load_case(self.load)}")
+        if self.holes:
+            lines.append(f"Hål att borra: {len(self.holes)} st")
+            for index, hole in enumerate(self.holes, start=1):
+                lines.append(f"  {index}. {hole.describe()}")
         if self.cuts:
             lines.append(f"Snitt: {len(self.cuts)} st")
             for index, cut in enumerate(self.cuts, start=1):
@@ -260,6 +268,7 @@ def load_project(path: str | Path) -> Project:
         output_dir=str(export.get("output_dir", "")),
         base_profile=str(settings.get("base_profile", "")),
         saved=str(settings.get("saved", "")),
+        holes=[Hole.from_dict(item) for item in settings.get("holes", [])],
         part_names=_by_index(settings.get("part_names")),
         part_colours=_by_index(settings.get("part_colours")),
         note=str(settings.get("note", "")),

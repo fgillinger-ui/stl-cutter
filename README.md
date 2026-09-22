@@ -71,7 +71,8 @@ stl-cutter-gui
 ```
 
 Fönstret har en panel till vänster med **en flik per steg** — 1. Modell,
-2. Skrivare, 3. Snitt, 4. Delar, 5. Exportera — och en 3D-vy till höger. Varje
+1c. Hål, 2. Skrivare, 3. Snitt, 4. Delar, 5. Exportera — och en 3D-vy till
+höger. Varje
 flik får plats i sin helhet, så ingenting hamnar utanför fönsterkanten.
 
 1. **Modell** — klicka *Öppna fil…* eller dra en STL- eller 3MF-fil in i
@@ -85,6 +86,13 @@ flik får plats i sin helhet, så ingenting hamnar utanför fönsterkanten.
    Godstjocklek, hörnradier och hål behåller sina mått. Hittas inget sådant
    parti får du en varning och kan välja skalning i stället, med vetskap om att
    hål då blir ovala. *Ångra* lägger tillbaka originalet.
+1c. **Hål** — behöver modellen hål? Klicka *Placera hål i vyn* och peka på
+   modellen: hålet borras vinkelrätt in i ytan du pekar på. Eller *Lägg till
+   hål* och skriv in X, Y, Z, diameter och djup i tabellen. Välj skruv (M3–M6)
+   så sätts diametern och försänkningen efter den, eller ange ett eget mått.
+   Hålen borras **före** snitten, så att ett hål tvärs över ett snitt hamnar i
+   båda delarna. *Ångra borrning* lägger tillbaka modellen. Se
+   [docs/HOLES.md](docs/HOLES.md).
 2. **Skrivare** — välj din skrivare i listan. Måtten fylls i automatiskt men går
    att ändra. Har du en skrivare som inte finns med: skriv in måtten och klicka
    *Spara som ny profil*.
@@ -225,6 +233,16 @@ stl-cutter resize nas.3mf --x 270 --part 2 --out ut/nas.stl
 
 I gränssnittet dyker då en rullgardin **Objekt** upp i rutan *1b. Ändra mått*.
 Se [docs/RESIZE.md](docs/RESIZE.md#flera-objekt-i-samma-fil).
+
+Borra hål — skruvhål med försänkning, eller egna mått:
+
+```bash
+stl-cutter drill platta.stl --hole 10,0,6 --hole=-10,0,6 --screw M4
+stl-cutter drill hylla.stl --hole 0,-30,20 --direction +y --diameter 6 --depth 12
+```
+
+Punkten är där hålet börjar, på ytan. Negativa tal skrivs med likhetstecken
+(`--hole=-10,0,6`). Se [docs/HOLES.md](docs/HOLES.md).
 
 Delarna skrivs **vända platt** och med **lösa kroppar i egna filer**. Det
 första tar bort stödbehovet och lägger utskriftens lager längs delen i stället
@@ -398,6 +416,7 @@ stl-cutter printers --add "Min skrivare" --bed 300 300 400 --margin 8
 ## Mer att läsa
 
 * [docs/JOINTS.md](docs/JOINTS.md) — fogtyperna, när de passar och hur du monterar dem
+* [docs/HOLES.md](docs/HOLES.md) — borra hål, skruvmåtten och vad som blir trängre i utskrift
 * [docs/RESIZE.md](docs/RESIZE.md) — ändra mått utan att deformera godset, och vad som inte fungerar
 * [docs/LOAD.md](docs/LOAD.md) — delar som ska bära last, och varför programmet inte räknar ut bärighet
 * [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — hur programmet är byggt
