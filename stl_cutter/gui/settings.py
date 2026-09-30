@@ -52,6 +52,8 @@ class Settings:
     install_profile_direct: bool = True
     #: Skriv också filer att importera för hand.
     export_profile_files: bool = False
+    #: Vad slicerprofilen heter, t.ex. "Synology hylla".
+    slicer_profile_name: str = "Bärande delar"
 
     @classmethod
     def load(cls, path: Path | None = None) -> "Settings":

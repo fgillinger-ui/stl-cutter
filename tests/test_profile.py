@@ -434,3 +434,92 @@ def test_the_extruder_variants_come_from_the_base(tmp_path):
     assert profile_core.extruder_variants(install, "Flashforge HS PETG @FF C5P") == [
         "Direct Drive Standard"
     ]
+
+
+# --------------------------------------------------------------------------
+# Egna profiler som bas
+# --------------------------------------------------------------------------
+
+
+def _install(tmp_path):
+    home = tmp_path / "home"
+    make_fake_orca(home / ".config", printer="Flashforge Creator 5 Pro 0.4 nozzle")
+    return profile_core.find_slicers(home=home)[0]
+
+
+def test_own_profiles_are_listed(tmp_path):
+    install = _install(tmp_path)
+
+    names = profile_core.user_profile_names(
+        install, "process", "Flashforge Creator 5 Pro 0.4 nozzle"
+    )
+
+    # compatible_printers saknas i den egna filen och ärvs från systemprofilen.
+    assert names == ["Synology hylla"]
+    assert profile_core.user_profile_names(install, "process", "Någon annan skrivare") == []
+
+
+def test_an_own_base_is_flattened_onto_the_system_profile(tmp_path):
+    """Den nya profilen får ärva från systemet, inte från en annan egen
+    profil: slicern läser användarmappen i godtycklig ordning och hoppar
+    över en profil vars förälder inte är inläst än."""
+    install = _install(tmp_path)
+
+    base, extra = profile_core.resolve_base(install, "process", "Synology hylla")
+    out = profile_core.process_profile(shelf_load(), base, "Synology hylla styrka", overrides=extra)
+
+    assert out["inherits"] == "0.20mm Standard @FF C5"
+    assert out["enable_support"] == "1" and out["support_style"] == "organic"
+    # Hållfastheten vinner över den egna profilens två väggar.
+    assert out["wall_loops"] == "5"
+    assert out["name"] == out["print_settings_id"] == "Synology hylla styrka"
+    assert profile_core.validate_profile(out, set(install.profiles("process"))) == []
+
+
+def test_a_chain_of_own_profiles_is_followed(tmp_path):
+    install = _install(tmp_path)
+    child = install.user_dir / "process" / "Hylla 2.json"
+    child.write_text(
+        json.dumps({"name": "Hylla 2", "inherits": "Synology hylla", "support_style": "tree"}),
+        encoding="utf-8",
+    )
+    install._profiles.clear()
+
+    base, extra = profile_core.resolve_base(install, "process", "Hylla 2")
+
+    assert base == "0.20mm Standard @FF C5"
+    assert extra["support_style"] == "tree"  # närmast den valda vinner
+    assert extra["enable_support"] == "1"
+
+
+def test_a_system_base_needs_no_flattening(tmp_path):
+    install = _install(tmp_path)
+
+    assert profile_core.resolve_base(install, "process", "0.20mm Standard @FF C5") == (
+        "0.20mm Standard @FF C5",
+        {},
+    )
+    assert profile_core.resolve_base(None, "process", "vad som helst") == ("vad som helst", {})
+
+
+def test_an_own_profile_without_a_system_parent_is_refused(tmp_path):
+    install = _install(tmp_path)
+    (install.user_dir / "process" / "Rot.json").write_text(
+        json.dumps({"name": "Rot", "wall_loops": "3"}), encoding="utf-8"
+    )
+    install._profiles.clear()
+
+    with pytest.raises(profile_core.ProfileError):
+        profile_core.resolve_base(install, "process", "Rot")
+
+
+def test_the_text_list_only_shows_the_strength_settings(tmp_path):
+    """Den egna profilens inställningar finns redan i slicern - listan att
+    knappa in för hand ska bara ha det programmet ändrar."""
+    bundle = profile_core.write_profiles(
+        shelf_load(), tmp_path, base_profile="bas", process_overrides={"enable_support": "1"}
+    )
+
+    text = [p for p in bundle.files if p.suffix == ".txt"][0].read_text(encoding="utf-8")
+    assert "enable_support" not in text
+    assert "wall_loops" in text

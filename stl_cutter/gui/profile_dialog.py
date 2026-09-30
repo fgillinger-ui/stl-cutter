@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QHeaderView,
     QLabel,
+    QLineEdit,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -45,6 +46,7 @@ TARGET_LABELS = {
     load_core.FILAMENT: "Filamentprofil",
 }
 MANUAL = "ställs in manuellt"
+DEFAULT_NAME = "Bärande delar"
 
 
 @dataclass
@@ -60,6 +62,8 @@ class ProfileChoice:
     install_direct: bool = False
     #: Skriv också filer att importera för hand, i en mapp man väljer.
     export_files: bool = True
+    #: Vad den nya profilen ska heta i slicern.
+    name: str = "Bärande delar"
 
     @property
     def has_filament(self) -> bool:
@@ -158,6 +162,13 @@ class ProfileDialog(QDialog):
             "Väljer du en filamentprofil ur listan hämtas värdet därifrån."
         )
         form.addRow("Brukar köras i:", self.temp_spin)
+
+        self.name_edit = QLineEdit(choice.name or DEFAULT_NAME)
+        self.name_edit.setToolTip(
+            "Namnet profilen får i slicerns rullgardiner. Samma namn som en\n"
+            "egen profil skriver över den (du får frågan först)."
+        )
+        form.addRow("Namn på profilen:", self.name_edit)
         layout.addLayout(form)
 
         self.name_warning = QLabel("")
@@ -199,6 +210,7 @@ class ProfileDialog(QDialog):
 
         self.slicer_combo.currentIndexChanged.connect(self._fill_profiles)
         self.base_edit.textChanged.connect(self._check_names)
+        self.name_edit.textChanged.connect(self._check_names)
         self.filament_edit.textChanged.connect(self._on_filament_changed)
         self.temp_spin.valueChanged.connect(self._refresh_preview)
 
@@ -228,8 +240,13 @@ class ProfileDialog(QDialog):
             printer = install.selected_printer
             processes = profile_core.system_profiles(install, "process", printer)
             filaments = profile_core.system_profiles(install, "filament", printer)
+            # Egna profiler först: det är dem man oftast menar.
+            self.process_combo.addItems(profile_core.user_profile_names(install, "process", printer))
             self.process_combo.addItems(processes)
             self.filament_combo.addItem("")  # ingen filamentprofil
+            self.filament_combo.addItems(
+                profile_core.user_profile_names(install, "filament", printer)
+            )
             self.filament_combo.addItems(filaments)
             self.printer_label.setText(
                 f"Profilerna är filtrerade på skrivaren {printer}, som är vald i slicern."
@@ -252,22 +269,39 @@ class ProfileDialog(QDialog):
         install = self.current_slicer()
         if install is None:
             return None
-        return {n for n, d in install.profiles(kind).items()}
+        return set(install.all_profiles(kind))
 
     def _check_names(self, *_args) -> None:
-        """Varna direkt om ett namn inte finns i slicern."""
-        problems = []
+        """Varna direkt om ett namn inte finns, och säg vad en egen bas betyder."""
+        install = self.current_slicer()
         process = self.base_edit.text().strip()
         filament = self.filament_edit.text().strip()
-        known_process = self._known("process")
-        known_filament = self._known("filament")
-        if process and known_process is not None and process not in known_process:
-            problems.append(f"Processprofilen {process!r} finns inte i slicern.")
-        if filament and known_filament is not None and filament not in known_filament:
-            problems.append(f"Filamentprofilen {filament!r} finns inte i slicern.")
-        if problems:
-            problems.append("Importen vägrar profiler vars basprofil inte finns.")
-        self.name_warning.setText(" ".join(problems))
+        name = self.name_edit.text().strip()
+        errors: list[str] = []
+        notes: list[str] = []
+
+        for kind, label, value in (
+            ("process", "Processprofilen", process),
+            ("filament", "Filamentprofilen", filament),
+        ):
+            if not value or install is None:
+                continue
+            if value not in install.all_profiles(kind):
+                errors.append(f"{label} {value!r} finns inte i slicern.")
+            elif value in install.user_profiles(kind):
+                notes.append(
+                    f"{value!r} är en egen profil: dina inställningar i den följer "
+                    "med, och hållfastheten läggs ovanpå."
+                )
+        if errors:
+            errors.append("Importen vägrar profiler vars basprofil inte finns.")
+        if not name:
+            errors.append("Ge profilen ett namn.")
+        elif install is not None and name in install.profiles("process"):
+            errors.append(f"{name!r} är en av slicerns egna profiler - välj ett annat namn.")
+
+        self.name_warning.setStyleSheet("color: #b00;" if errors else "color: #555;")
+        self.name_warning.setText(" ".join(errors + notes))
 
     def _on_filament_changed(self, *_args) -> None:
         """Hämta filamentets vanliga temperatur ur basprofilen, om den finns."""
@@ -275,7 +309,7 @@ class ProfileDialog(QDialog):
         name = self.filament_edit.text().strip()
         if install is not None and name:
             temp = profile_core.inherited_value(
-                install.profiles("filament"), name, "nozzle_temperature"
+                install.all_profiles("filament"), name, "nozzle_temperature"
             )
             try:
                 value = float(temp[0] if isinstance(temp, list) else temp)
@@ -329,4 +363,5 @@ class ProfileDialog(QDialog):
             slicer=str(install.data_dir) if install else "",
             install_direct=bool(install) and self.install_check.isChecked(),
             export_files=self.export_check.isChecked(),
+            name=self.name_edit.text().strip() or DEFAULT_NAME,
         )
