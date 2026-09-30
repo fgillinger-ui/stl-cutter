@@ -97,6 +97,8 @@ __all__ = [
     "system_profiles",
     "user_profile_path",
     "install_profiles",
+    "resolve_base",
+    "user_profile_names",
     "inherited_value",
     "extruder_variants",
     "TEMPERATURE_BOOST_C",
@@ -142,12 +144,16 @@ def process_profile(
     base_profile: str,
     name: str = "Bärande delar",
     nozzle_mm: float = 0.4,
+    overrides: dict | None = None,
 ) -> dict:
     """Processprofilen: väggar, skal, fyllnad och lagerhöjd.
 
     Värdena hämtas ur `load_core.print_advice` - samma rader som visas i
     förhandsvisningen. Allt annat ärvs från `base_profile`, som måste vara
-    namnet på en profil som redan finns i slicern.
+    namnet på en systemprofil i slicern.
+
+    `overrides` är inställningar från en egen profil som ska följa med (se
+    `resolve_base`). Hållfasthetsvärdena skrivs efter dem och vinner.
     """
     if not load.active:
         raise ProfileError(
@@ -171,6 +177,7 @@ def process_profile(
         "inherits": base_profile.strip(),
         # Det här fältet, inte "type", gör den till en processprofil.
         "print_settings_id": safe,
+        **_clean_overrides(overrides),
         **load_core.profile_values(advice, load_core.PROCESS),
     }
 
@@ -181,6 +188,7 @@ def filament_profile(
     normal_temp_c: float,
     name: str = "Bärande delar",
     extruder_variants: list[str] | None = None,
+    overrides: dict | None = None,
 ) -> dict:
     """Filamentprofilen: varmare plast och lugnare fläkt.
 
@@ -211,6 +219,7 @@ def filament_profile(
         "inherits": base_profile.strip(),
         # Motsvarigheten för filament - och en lista, som alla filamentvärden.
         "filament_settings_id": [safe],
+        **_clean_overrides(overrides),
     }
     if extruder_variants and count > 1:
         out["filament_extruder_variant"] = list(extruder_variants)
@@ -236,6 +245,24 @@ UI_LABELS = {
 
 #: Fälten som är profilens rubrik, inte en inställning att skriva in.
 HEADER_KEYS = ("version", "name", "from", "inherits", "print_settings_id", "filament_settings_id")
+
+
+#: Fält som hör till profilens identitet eller till slicerns synkning och
+#: därför aldrig följer med från en egen profil till den nya.
+_NOT_COPIED = set(HEADER_KEYS) | {
+    "printer_settings_id",
+    "setting_id",
+    "base_id",
+    "user_id",
+    "updated_time",
+    "type",
+    "instantiation",
+    "is_custom_defined",
+}
+
+
+def _clean_overrides(overrides: dict | None) -> dict:
+    return {k: v for k, v in (overrides or {}).items() if k not in _NOT_COPIED}
 
 
 def settings_text(process: dict, filament: dict | None = None) -> str:
@@ -264,7 +291,7 @@ def settings_text(process: dict, filament: dict | None = None) -> str:
         "Processinställningar:",
     ]
     for key, value in process.items():
-        if key in HEADER_KEYS:
+        if key not in UI_LABELS:
             continue
         lines.append(f"  {UI_LABELS.get(key, key)}: {value}   ({key})")
 
@@ -272,7 +299,7 @@ def settings_text(process: dict, filament: dict | None = None) -> str:
         lines.append("")
         lines.append("Filamentinställningar:")
         for key, value in filament.items():
-            if key in HEADER_KEYS:
+            if key not in UI_LABELS:
                 continue
             shown = value[0] if isinstance(value, list) and value else value
             lines.append(f"  {UI_LABELS.get(key, key)}: {shown}   ({key})")
@@ -295,6 +322,8 @@ def write_profiles(
     filament_base: str = "",
     normal_temp_c: float = 0.0,
     extruder_variants: list[str] | None = None,
+    process_overrides: dict | None = None,
+    filament_overrides: dict | None = None,
 ) -> ProfileBundle:
     """Skriv profilerna till `out_dir` och berätta vad som inte gick att göra."""
     out_dir = Path(out_dir)
@@ -304,7 +333,7 @@ def write_profiles(
     files: list[Path] = []
     notes: list[str] = []
 
-    process = process_profile(load, base_profile, name, nozzle_mm)
+    process = process_profile(load, base_profile, name, nozzle_mm, overrides=process_overrides)
     process_path = out_dir / f"{stem} - process.json"
     process_path.write_text(
         json.dumps(process, indent=4, ensure_ascii=False) + "\n",
@@ -315,7 +344,12 @@ def write_profiles(
     filament = None
     if filament_base.strip() and normal_temp_c > 0:
         filament = filament_profile(
-            load, filament_base, normal_temp_c, name, extruder_variants=extruder_variants
+            load,
+            filament_base,
+            normal_temp_c,
+            name,
+            extruder_variants=extruder_variants,
+            overrides=filament_overrides,
         )
         filament_path = out_dir / f"{stem} - filament.json"
         filament_path.write_text(
@@ -474,6 +508,31 @@ class SlicerInstall:
             self._profiles[kind] = _read_system_profiles(self.data_dir / "system", kind)
         return self._profiles[kind]
 
+    def user_profiles(self, kind: str) -> dict[str, dict]:
+        """Egna profiler av en sort, ur användarmappen.
+
+        Slicern tar namnet från filnamnet (Preset.cpp rad 1604), så det gör
+        vi också. Filer som inte går att läsa hoppas över, som i slicern.
+        """
+        key = f"user:{kind}"
+        if key not in self._profiles:
+            found: dict[str, dict] = {}
+            folder = self.user_dir / kind
+            if folder.is_dir():
+                for path in sorted(folder.glob("*.json")):
+                    try:
+                        data = json.loads(path.read_text(encoding="utf-8"))
+                    except (OSError, ValueError):
+                        continue
+                    if isinstance(data, dict):
+                        found[path.stem] = data
+            self._profiles[key] = found
+        return self._profiles[key]
+
+    def all_profiles(self, kind: str) -> dict[str, dict]:
+        """System- och egna profiler, för att följa arvskedjor genom båda."""
+        return {**self.profiles(kind), **self.user_profiles(kind)}
+
 
 def _config_home(env: dict | None = None) -> Path:
     env = os.environ if env is None else env
@@ -545,6 +604,63 @@ def inherited_value(profiles: dict[str, dict], name: str, key: str):
     return None
 
 
+def user_profile_names(install: SlicerInstall, kind: str, printer: str = "") -> list[str]:
+    """Egna profiler som bygger på något i slicern, filtrerade på skrivaren.
+
+    En egen profil saknar ofta ``compatible_printers`` och ärver den från
+    systemprofilen, så den slås upp genom hela kedjan.
+    """
+    everything = install.all_profiles(kind)
+    names = sorted(install.user_profiles(kind))
+    if not printer:
+        return names
+    out = []
+    for name in names:
+        compatible = inherited_value(everything, name, "compatible_printers")
+        if not compatible or printer in compatible:
+            out.append(name)
+    return out
+
+
+def resolve_base(install: SlicerInstall | None, kind: str, name: str) -> tuple[str, dict]:
+    """Systemprofilen att ärva från, och de egna inställningar som ska med.
+
+    Väljer man en egen profil ("Synology hylla") som bas går det inte att
+    låta den nya profilen ärva från den: slicern läser användarmappen i
+    godtycklig ordning och hoppar tyst över en profil vars förälder inte är
+    inläst än (Preset.cpp rad 1676-1680). I stället följs kedjan upp till
+    systemprofilen, och den egna profilens inställningar kopieras in - så
+    blir den nya profilen den egna plus hållfastheten.
+    """
+    name = name.strip()
+    if install is None or name not in install.user_profiles(kind):
+        return name, {}
+    system = install.profiles(kind)
+    users = install.user_profiles(kind)
+    chain: list[dict] = []
+    current = name
+    seen: set[str] = set()
+    while current in users and current not in seen:
+        seen.add(current)
+        chain.append(users[current])
+        current = str(users[current].get("inherits", "") or "")
+    if not current:
+        raise ProfileError(
+            f"Den egna profilen {name!r} bygger inte på någon av slicerns "
+            "profiler, så det finns inget att ärva resten från. Välj en av "
+            "slicerns egna profiler i stället."
+        )
+    if current not in system:
+        raise ProfileError(
+            f"Den egna profilen {name!r} bygger på {current!r}, som inte finns "
+            "bland slicerns systemprofiler."
+        )
+    overrides: dict = {}
+    for data in reversed(chain):  # närmast systemet först, den valda sist
+        overrides.update(_clean_overrides(data))
+    return current, overrides
+
+
 def system_profiles(install: SlicerInstall, kind: str, printer: str = "") -> list[str]:
     """Namnen i slicerns rullgardin, filtrerade på skrivaren när det går.
 
@@ -564,7 +680,7 @@ def system_profiles(install: SlicerInstall, kind: str, printer: str = "") -> lis
 
 def extruder_variants(install: SlicerInstall, filament: str) -> list[str]:
     """Basprofilens ``filament_extruder_variant``, eller tom lista."""
-    value = inherited_value(install.profiles("filament"), filament, "filament_extruder_variant")
+    value = inherited_value(install.all_profiles("filament"), filament, "filament_extruder_variant")
     return [str(v) for v in value] if isinstance(value, list) else []
 
 

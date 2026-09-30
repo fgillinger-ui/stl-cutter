@@ -156,6 +156,14 @@ def make_fake_orca(config_home, app_key="Orca-Flashforge", preset_folder="", pri
         "name": "Generic PETG HF @System", "instantiation": "true",
         "nozzle_temperature": ["240"],
     })
+    # En egen processprofil, som användarens "Synology hylla": bara det som
+    # skiljer sig från systemprofilen står i filen.
+    user = data / "user" / (preset_folder or "default")
+    put(user / "process" / "Synology hylla.json", {
+        "version": "2.1.1.0", "name": "Synology hylla", "from": "User",
+        "inherits": "0.20mm Standard @FF C5", "print_settings_id": "Synology hylla",
+        "enable_support": "1", "support_style": "organic", "wall_loops": "2",
+    })
     conf = {"app": {"preset_folder": preset_folder}}
     if printer is not None:
         conf["presets"] = {"machine": printer}

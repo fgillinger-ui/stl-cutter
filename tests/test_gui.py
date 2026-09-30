@@ -2213,7 +2213,7 @@ def test_there_is_one_strength_button_not_two(window):
 
 
 def answer_profile_dialog(
-    monkeypatch, base, filament="", temp=235.0, accept=True, install=None, export=True
+    monkeypatch, base, filament="", temp=235.0, accept=True, install=None, export=True, name=None
 ):
     """Fyll i profildialogen utan att öppna den."""
     from PySide6.QtWidgets import QDialog, QFileDialog
@@ -2227,6 +2227,8 @@ def answer_profile_dialog(
         if install is not None:
             self.install_check.setChecked(install)
         self.export_check.setChecked(export)
+        if name is not None:
+            self.name_edit.setText(name)
         return QDialog.Accepted if accept else QDialog.Rejected
 
     monkeypatch.setattr(profile_dialog.ProfileDialog, "exec", fake_exec)
@@ -2377,7 +2379,12 @@ def test_the_dialog_lists_the_slicers_profiles(qapp, fake_orca):
     try:
         assert dialog.slicer_combo.count() == 1
         processes = [dialog.process_combo.itemText(i) for i in range(dialog.process_combo.count())]
-        assert processes == ["0.20mm Standard @FF C5", "0.24mm Standard @FF C5"]
+        # Egna profiler först, sedan slicerns egna.
+        assert processes == [
+            "Synology hylla",
+            "0.20mm Standard @FF C5",
+            "0.24mm Standard @FF C5",
+        ]
         assert dialog.install_check.isChecked(), "förvald när en slicer hittats"
 
         # Temperaturen hämtas ur filamentets basprofil.
@@ -2387,7 +2394,7 @@ def test_the_dialog_lists_the_slicers_profiles(qapp, fake_orca):
         # Ett namn som inte finns varnas för direkt.
         dialog.process_combo.setCurrentText("0.20mm Standard @FF C5 Pro")
         assert "finns inte" in dialog.name_warning.text()
-        dialog.process_combo.setCurrentIndex(0)
+        dialog.process_combo.setCurrentText("0.20mm Standard @FF C5")
         assert dialog.name_warning.text() == ""
     finally:
         dialog.close()
@@ -2425,6 +2432,53 @@ def test_the_profile_is_installed_directly_in_the_slicer(
     assert window.settings.slicer == str(fake_orca)
 
 
+def test_an_own_profile_can_be_the_base_and_the_name_is_chosen(
+    qapp, window, model_file, fake_orca, monkeypatch
+):
+    """Användaren har en egen profil "Synology hylla" och vill ha en
+    hållfast variant med eget namn - inte "Bärande delar"."""
+    import json
+
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+    window.load_check.setChecked(True)
+
+    answer_profile_dialog(
+        monkeypatch, "Synology hylla", install=True, export=False, name="Synology hylla styrka"
+    )
+    window.save_slicer_profile()
+
+    path = fake_orca / "user" / "default" / "process" / "Synology hylla styrka.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["name"] == "Synology hylla styrka"
+    assert data["inherits"] == "0.20mm Standard @FF C5"
+    assert data["support_style"] == "organic"
+    assert data["wall_loops"] == "5"
+    assert window.settings.slicer_profile_name == "Synology hylla styrka"
+    assert "FEL" not in window.status_box.toPlainText()
+
+
+def test_the_dialog_lists_own_profiles_first_and_asks_for_a_name(qapp, fake_orca):
+    from stl_cutter.core.load import LoadCase
+    from stl_cutter.gui.profile_dialog import ProfileChoice, ProfileDialog
+
+    dialog = ProfileDialog(
+        choice=ProfileChoice(name="Synology hylla"), load=LoadCase(5.0, "cantilever")
+    )
+    try:
+        assert dialog.process_combo.itemText(0) == "Synology hylla"
+        assert dialog.name_edit.text() == "Synology hylla"
+        dialog.process_combo.setCurrentText("Synology hylla")
+        assert "egen profil" in dialog.name_warning.text()
+        # Ett systemnamn går inte att använda - importen vägrar det.
+        dialog.name_edit.setText("0.20mm Standard @FF C5")
+        assert "annat namn" in dialog.name_warning.text()
+        dialog.name_edit.setText("Min hylla")
+        assert dialog.choice().name == "Min hylla"
+    finally:
+        dialog.close()
+
+
 def test_an_existing_profile_is_only_overwritten_after_asking(
     qapp, window, model_file, fake_orca, monkeypatch
 ):
@@ -2435,7 +2489,7 @@ def test_an_existing_profile_is_only_overwritten_after_asking(
     window.load_check.setChecked(True)
 
     target = fake_orca / "user" / "default" / "process" / "Bärande delar.json"
-    target.parent.mkdir(parents=True)
+    target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text("gammal", encoding="utf-8")
 
     asked = []

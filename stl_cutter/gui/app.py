@@ -1947,6 +1947,7 @@ class MainWindow(QMainWindow):
                 slicer=self.settings.slicer,
                 install_direct=self.settings.install_profile_direct,
                 export_files=self.settings.export_profile_files,
+                name=self.settings.slicer_profile_name,
             ),
             load=case,
         )
@@ -1968,10 +1969,38 @@ class MainWindow(QMainWindow):
         self.settings.slicer = choice.slicer
         self.settings.install_profile_direct = choice.install_direct
         self.settings.export_profile_files = choice.export_files
+        self.settings.slicer_profile_name = choice.name
 
-        name = "Bärande delar"
+        name = choice.name
+        # En egen profil som bas plattas ut: den nya profilen ärver från
+        # systemprofilen under den och får med de egna inställningarna.
+        source = dialog.current_slicer()
+        process_base, process_extra = profile_core.resolve_base(
+            source, "process", choice.base_profile
+        )
+        filament_base, filament_extra = (
+            profile_core.resolve_base(source, "filament", choice.filament_profile)
+            if choice.has_filament
+            else ("", {})
+        )
+        for picked, base, extra in (
+            (choice.base_profile, process_base, process_extra),
+            (choice.filament_profile, filament_base, filament_extra),
+        ):
+            if extra:
+                self.status(
+                    f"{picked!r} är en egen profil: {len(extra)} inställningar från "
+                    f"den följer med, och den nya profilen ärver resten från {base!r}."
+                )
+        choice = replace(
+            choice,
+            base_profile=process_base,
+            filament_profile=filament_base or choice.filament_profile,
+        )
         if install is not None:
-            self._install_profiles(install, case, choice, name)
+            self._install_profiles(
+                install, case, choice, name, process_extra, filament_extra
+            )
 
         if choice.export_files or install is None:
             directory = QFileDialog.getExistingDirectory(
@@ -1994,6 +2023,8 @@ class MainWindow(QMainWindow):
                 filament_base=choice.filament_profile,
                 normal_temp_c=choice.filament_temp_c,
                 extruder_variants=variants,
+                process_overrides=process_extra,
+                filament_overrides=filament_extra,
             )
             for path in bundle.files:
                 self.status(f"Skrev {path}")
@@ -2003,9 +2034,15 @@ class MainWindow(QMainWindow):
                 "Importera i slicern: Arkiv → Importera → Importera konfiguration."
             )
 
-    def _install_profiles(self, install, case, choice, name: str) -> None:
+    def _install_profiles(
+        self, install, case, choice, name: str, process_extra=None, filament_extra=None
+    ) -> None:
         """Lägg profilerna i slicerns användarmapp, med lov att skriva över."""
-        profiles = [profile_core.process_profile(case, choice.base_profile, name)]
+        profiles = [
+            profile_core.process_profile(
+                case, choice.base_profile, name, overrides=process_extra
+            )
+        ]
         if choice.has_filament:
             profiles.append(
                 profile_core.filament_profile(
@@ -2016,6 +2053,7 @@ class MainWindow(QMainWindow):
                     extruder_variants=profile_core.extruder_variants(
                         install, choice.filament_profile
                     ),
+                    overrides=filament_extra,
                 )
             )
         else:

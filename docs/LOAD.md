@@ -108,11 +108,18 @@ I gränssnittet: **Slicerprofil för styrka…** i rutan *3b. Belastning*.
 * **Processprofil / Filamentprofil** — rullgardiner med slicerns egna
   systemprofiler, filtrerade på skrivaren som är vald i slicern. Hittas ingen
   slicer går namnen att skriva in för hand.
+* **Egna profiler** står först i rullgardinen. Väljer du en egen profil (t.ex.
+  *Synology hylla*) följer dina inställningar i den med, och hållfastheten
+  läggs ovanpå. Den nya profilen ärver från systemprofilen under din egen —
+  slicern läser egna profiler i godtycklig ordning och hoppar tyst över en
+  profil vars förälder inte är inläst än.
+* **Namn på profilen** — vad den nya profilen heter i slicern. Standard är
+  *Bärande delar*; samma namn som en egen profil skriver över den (efter
+  fråga).
 * **Lägg in profilen direkt i slicern** — förvald när en slicer hittats.
   Profilerna skrivs till `user/default/process/` och `user/default/filament/`
   i slicerns mapp (`user/<ditt id>/` om du är inloggad i slicern). Finns en
-  profil med samma namn frågar programmet först. **Starta om slicern** efteråt;
-  profilen heter *Bärande delar*. Programmet skriver aldrig i `system/`.
+  profil med samma namn frågar programmet först. **Starta om slicern** efteråt. Programmet skriver aldrig i `system/`.
 * **Spara även filer att importera för hand** — JSON-filer för *Arkiv →
   Importera → Importera konfiguration*, och textfilen nedan.
 
