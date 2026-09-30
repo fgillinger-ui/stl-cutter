@@ -305,7 +305,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         metavar="NAMN",
         help="Filamentprofilen att bygga på, till exempel "
-        "'Flashforge HS PETG @FF C5'. Krävs tillsammans med --filament-temp "
+        "'Flashforge HS PETG @FF C5P'. Krävs tillsammans med --filament-temp "
         "för att temperatur och fläkt ska skrivas.",
     )
     profile_cmd.add_argument(

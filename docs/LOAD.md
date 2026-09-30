@@ -83,7 +83,7 @@ längst från neutrallagret.
 | Fyllnad | 25 %, gyroid | Över ~30 % ger varje procent lite styrka och mycket tid. Gyroid håller lika bra åt alla håll. |
 | Topp/botten | 5 lager | Samma skäl som väggarna. |
 | Lagerhöjd | ~65 % av munstycket | Både snabbare och något starkare mellan lagren — färre fogar att spricka i. |
-| Temperatur | +5…+10 °C | Lagerhäftningen är den svaga riktningen. Den enda inställningen som är gratis i tid. |
+| Temperatur | +8 °C | Lagerhäftningen är den svaga riktningen. Den enda inställningen som är gratis i tid. |
 | Fläkt | 30–50 % | Snabb kylning ger fina detaljer men svagare lagerfogar. |
 | Orientering | Delen liggande | Lagren ska ligga längs delen, inte tvärs. Kryssrutan *Vänd delarna platt* gör det automatiskt. |
 
@@ -93,15 +93,33 @@ väggarna eller temperaturen — det är de som bär.
 ## Profil till slicern
 
 Inställningarna går att få som en fil slicern läser, i stället för att knappas
-in. OrcaSlicer och det som bygger på den — FlashPrint för Flashforge Creator 5,
-Bambu Studio, Qidi Studio — läser profiler som JSON:
+in. OrcaSlicer och det som bygger på den — Orca-Flashforge för Flashforge
+Creator 5, Bambu Studio, Qidi Studio — läser profiler som JSON:
 
 ```bash
 stl-cutter profile --load-kg 5 --base-profile "0.20mm Standard @FF C5" --out ./ut
 ```
 
-I gränssnittet: **Spara slicerprofil…** i rutan *3b. Belastning*. Importera
-sedan med *Arkiv → Importera → Importera konfiguration*.
+I gränssnittet: **Slicerprofil för styrka…** i rutan *3b. Belastning*.
+
+* **Slicer** — de slicers som körts på datorn hittas själva, i
+  `~/.config/Orca-Flashforge`, `~/.config/OrcaSlicer`, `~/.config/BambuStudio`
+  och motsvarande Flatpak-mappar under `~/.var/app/*/config/`.
+* **Processprofil / Filamentprofil** — rullgardiner med slicerns egna
+  systemprofiler, filtrerade på skrivaren som är vald i slicern. Hittas ingen
+  slicer går namnen att skriva in för hand.
+* **Lägg in profilen direkt i slicern** — förvald när en slicer hittats.
+  Profilerna skrivs till `user/default/process/` och `user/default/filament/`
+  i slicerns mapp (`user/<ditt id>/` om du är inloggad i slicern). Finns en
+  profil med samma namn frågar programmet först. **Starta om slicern** efteråt;
+  profilen heter *Bärande delar*. Programmet skriver aldrig i `system/`.
+* **Spara även filer att importera för hand** — JSON-filer för *Arkiv →
+  Importera → Importera konfiguration*, och textfilen nedan.
+
+För Flashforge Creator 5 Pro med 0,4 mm munstycke heter profilerna i
+Orca-Flashforge `0.20mm Standard @FF C5` (process) och t.ex.
+`Flashforge HS PETG @FF C5P` eller `Flashforge PLA Basic @FF C5P` (filament —
+observera `C5P`).
 
 Profilen sätter **bara** de sju inställningar som har med hållfasthet att göra
 och ärver allt annat — hastigheter, accelerationer, stöd, primtorn — från den
@@ -115,17 +133,19 @@ om du säger vad du kör:
 
 ```bash
 stl-cutter profile --load-kg 5 --base-profile "0.20mm Standard @FF C5" \
-    --filament-base "Flashforge HS PETG @FF C5" --filament-temp 235 --out ./ut
+    --filament-base "Flashforge HS PETG @FF C5P" --filament-temp 235 --out ./ut
 ```
 
-Skälet är detsamma som ovan: rådet är "+5 till +10 °C över det normala", och
-vad som är normalt beror på om det är PLA (215), PETG (235) eller ASA (255).
+Skälet är detsamma som ovan: rådet är +8 °C över det normala, och vad som är
+normalt beror på om det är PLA (210), PETG (235) eller ASA (270). Väljs
+filamentprofilen ur listan i gränssnittet hämtas det normala värdet därifrån.
 Utan den uppgiften skrivs ingen filamentprofil, och det står varför.
 
 ### Om importen säger "0 configs imported"
 
 Slicern säger inte vad som är fel, så här är vad den faktiskt kontrollerar
-(avläst ur `PresetBundle::import_json_presets` i OrcaSlicers källkod):
+(avläst ur `PresetBundle::import_json_presets` i Orca-Flashforges källkod,
+som på den punkten är identisk med OrcaSlicers — se `core/profile.py`):
 
 1. **`version` måste finnas** och gå att tolka som ett versionsnummer. Saknas
    det avbryts inläsningen före allt annat. Programmet skriver det åt dig.

@@ -46,6 +46,10 @@ def window(qapp, tmp_path, monkeypatch):
     """Ett fönster med isolerade inställningar och profiler."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    # Profildialogen letar efter slicers i hemkatalogen (Flatpak) - testerna
+    # får aldrig hitta, eller skriva i, en riktig slicer.
+    # Samma hemkatalog som fixturen fake_orca använder.
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
     win = MainWindow(Settings())
     yield win
     win.close()
@@ -2182,16 +2186,35 @@ def test_the_gui_export_lays_the_model_flat(qapp, window, tmp_path, monkeypatch)
     assert trimesh.load(target).extents[2] == pytest.approx(10.0, abs=0.01)
 
 
-def test_the_profile_button_needs_a_load(window):
-    """Utan last finns inga hållfasthetsinställningar att skriva."""
+def test_the_profile_button_needs_a_load(qapp, window, model_file):
+    """Utan last finns inga hållfasthetsinställningar att skriva - och
+    tooltipen säger varför knappen är grå."""
     assert not window.profile_button.isEnabled()
+    assert "Ingen modell" in window.profile_button.toolTip()
+
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+    assert not window.profile_button.isEnabled()
+    assert "Belastning" in window.profile_button.toolTip()
 
     window.load_check.setChecked(True)
+    window.load_weight.setValue(0.0)
+    assert not window.profile_button.isEnabled()
+    assert "0 kg" in window.profile_button.toolTip()
 
+    window.load_weight.setValue(5.0)
     assert window.profile_button.isEnabled()
 
 
-def answer_profile_dialog(monkeypatch, base, filament="", temp=235.0, accept=True):
+def test_there_is_one_strength_button_not_two(window):
+    """Råden och profilen visade samma sak i två knappar."""
+    assert not hasattr(window, "advice_button")
+    assert window.profile_button.text() == "Slicerprofil för styrka…"
+
+
+def answer_profile_dialog(
+    monkeypatch, base, filament="", temp=235.0, accept=True, install=None, export=True
+):
     """Fyll i profildialogen utan att öppna den."""
     from PySide6.QtWidgets import QDialog, QFileDialog
 
@@ -2201,6 +2224,9 @@ def answer_profile_dialog(monkeypatch, base, filament="", temp=235.0, accept=Tru
         self.base_edit.setText(base)
         self.filament_edit.setText(filament)
         self.temp_spin.setValue(temp)
+        if install is not None:
+            self.install_check.setChecked(install)
+        self.export_check.setChecked(export)
         return QDialog.Accepted if accept else QDialog.Rejected
 
     monkeypatch.setattr(profile_dialog.ProfileDialog, "exec", fake_exec)
@@ -2296,7 +2322,7 @@ def test_an_empty_process_profile_is_refused_with_a_reason(
 def test_the_dialog_reads_back_what_was_typed(qapp):
     from stl_cutter.gui.profile_dialog import ProfileChoice, ProfileDialog
 
-    dialog = ProfileDialog(choice=ProfileChoice(base_profile="bas"))
+    dialog = ProfileDialog(choice=ProfileChoice(base_profile="bas"), slicers=[])
     try:
         assert dialog.base_edit.text() == "bas"
         dialog.filament_edit.setText(" PETG ")
@@ -2314,6 +2340,144 @@ def test_the_dialog_reads_back_what_was_typed(qapp):
         assert not dialog.choice().has_filament
     finally:
         dialog.close()
+
+
+def test_the_dialog_previews_the_same_values_as_the_profile(qapp):
+    """Förhandsvisningen överst är samma rader som profilen skrivs ur."""
+    from stl_cutter.core import load as load_core
+    from stl_cutter.core import profile as profile_core
+    from stl_cutter.gui.profile_dialog import MANUAL, ProfileDialog
+
+    for kg in (1.0, 5.0):
+        case = load_core.LoadCase(mass_kg=kg, support="cantilever")
+        dialog = ProfileDialog(load=case, slicers=[])
+        try:
+            rows = {name: (value, where) for name, value, _why, where in dialog.preview_rows()}
+            process = profile_core.process_profile(case, "bas")
+
+            assert rows["Väggar (perimeters)"] == (f"{process['wall_loops']} st", "Processprofil")
+            assert rows["Orientering"][1] == MANUAL
+            # Utan filamentprofil hamnar temperaturen inte i någon profil.
+            assert rows["Temperatur"][1].startswith(MANUAL)
+            assert dialog.preview.rowCount() == len(rows)
+
+            dialog.filament_edit.setText("PETG")
+            dialog.temp_spin.setValue(235.0)
+            rows = {name: (value, where) for name, value, _why, where in dialog.preview_rows()}
+            assert rows["Temperatur"] == ("243 °C (235 + 8)", "Filamentprofil")
+        finally:
+            dialog.close()
+
+
+def test_the_dialog_lists_the_slicers_profiles(qapp, fake_orca):
+    from stl_cutter.core.load import LoadCase
+    from stl_cutter.gui.profile_dialog import ProfileDialog
+
+    dialog = ProfileDialog(load=LoadCase(5.0, "cantilever"))
+    try:
+        assert dialog.slicer_combo.count() == 1
+        processes = [dialog.process_combo.itemText(i) for i in range(dialog.process_combo.count())]
+        assert processes == ["0.20mm Standard @FF C5", "0.24mm Standard @FF C5"]
+        assert dialog.install_check.isChecked(), "förvald när en slicer hittats"
+
+        # Temperaturen hämtas ur filamentets basprofil.
+        dialog.filament_combo.setCurrentText("Flashforge PLA Basic @FF C5P")
+        assert dialog.temp_spin.value() == pytest.approx(210.0)
+
+        # Ett namn som inte finns varnas för direkt.
+        dialog.process_combo.setCurrentText("0.20mm Standard @FF C5 Pro")
+        assert "finns inte" in dialog.name_warning.text()
+        dialog.process_combo.setCurrentIndex(0)
+        assert dialog.name_warning.text() == ""
+    finally:
+        dialog.close()
+
+
+def test_the_profile_is_installed_directly_in_the_slicer(
+    qapp, window, model_file, fake_orca, monkeypatch
+):
+    import json
+
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+    window.load_check.setChecked(True)
+    window.load_weight.setValue(5.0)
+
+    answer_profile_dialog(
+        monkeypatch,
+        "0.20mm Standard @FF C5",
+        filament="Flashforge HS PETG @FF C5P",
+        temp=235.0,
+        install=True,
+        export=False,
+    )
+    window.save_slicer_profile()
+
+    user = fake_orca / "user" / "default"
+    process = json.loads((user / "process" / "Bärande delar.json").read_text(encoding="utf-8"))
+    filament = json.loads((user / "filament" / "Bärande delar.json").read_text(encoding="utf-8"))
+    assert process["inherits"] == "0.20mm Standard @FF C5"
+    assert filament["nozzle_temperature"] == ["243"]
+    log_text = window.status_box.toPlainText()
+    assert "starta om" in log_text
+    assert "FEL" not in log_text
+    assert not list((fake_orca / "system").rglob("Bärande*"))
+    assert window.settings.slicer == str(fake_orca)
+
+
+def test_an_existing_profile_is_only_overwritten_after_asking(
+    qapp, window, model_file, fake_orca, monkeypatch
+):
+    from PySide6.QtWidgets import QMessageBox
+
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+    window.load_check.setChecked(True)
+
+    target = fake_orca / "user" / "default" / "process" / "Bärande delar.json"
+    target.parent.mkdir(parents=True)
+    target.write_text("gammal", encoding="utf-8")
+
+    asked = []
+    monkeypatch.setattr(
+        QMessageBox, "question", staticmethod(lambda *a, **k: asked.append(a) or QMessageBox.No)
+    )
+    answer_profile_dialog(monkeypatch, "0.20mm Standard @FF C5", install=True, export=False)
+    window.save_slicer_profile()
+
+    assert asked
+    assert target.read_text(encoding="utf-8") == "gammal"
+
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes))
+    window.save_slicer_profile()
+    assert "wall_loops" in target.read_text(encoding="utf-8")
+
+
+def test_an_unexpected_error_is_explained_and_logged(
+    qapp, window, model_file, tmp_path, monkeypatch
+):
+    """Ett fel som inte är ett ProfileError ska inte göra knappen stum."""
+    from stl_cutter.core import profile as profile_core
+    from stl_cutter.gui.paths import log_file
+
+    window.load_model(model_file)
+    wait_for_worker(qapp, window)
+    window.load_check.setChecked(True)
+
+    QFileDialog = answer_profile_dialog(monkeypatch, "0.20mm Standard @FF C5")
+    monkeypatch.setattr(
+        QFileDialog, "getExistingDirectory", staticmethod(lambda *a, **k: str(tmp_path))
+    )
+
+    def boom(*_a, **_k):
+        raise RuntimeError("något oväntat")
+
+    monkeypatch.setattr(profile_core, "write_profiles", boom)
+    window.save_slicer_profile()
+
+    text = window.status_box.toPlainText()
+    assert "kunde inte sparas" in text and "något oväntat" in text
+    assert "Traceback" in log_file().read_text(encoding="utf-8")
 
 
 # --------------------------------------------------------------------------

@@ -46,6 +46,12 @@ class Settings:
     #: Behövs för att temperatur och fläkt ska kunna skrivas.
     filament_profile: str = ""
     filament_temp_c: float = 0.0
+    #: Datamappen för slicern som valdes sist i profildialogen.
+    slicer: str = ""
+    #: Lägg profilen direkt i slicerns användarmapp.
+    install_profile_direct: bool = True
+    #: Skriv också filer att importera för hand.
+    export_profile_files: bool = False
 
     @classmethod
     def load(cls, path: Path | None = None) -> "Settings":
