@@ -583,17 +583,9 @@ class MainWindow(QMainWindow):
         self.load_guess_label.setStyleSheet("color: #555;")
         layout.addWidget(self.load_guess_label)
 
-        self.advice_button = QPushButton("Utskriftsinställningar för styrka…")
-        self.advice_button.clicked.connect(self.show_print_advice)
-        layout.addWidget(self.advice_button)
-
-        self.profile_button = QPushButton("Spara slicerprofil…")
-        self.profile_button.setToolTip(
-            "Skriver inställningarna som en JSON-profil att importera i\n"
-            "slicern (OrcaSlicer, FlashPrint, Bambu Studio, Qidi Studio).\n"
-            "Profilen sätter bara det som rör hållfasthet - resten ärvs från\n"
-            "den profil du redan använder."
-        )
+        # En knapp, inte två: dialogen visar inställningarna med skäl överst och
+        # skriver sedan samma värden som profil.
+        self.profile_button = QPushButton("Slicerprofil för styrka…")
         self.profile_button.clicked.connect(self.save_slicer_profile)
         layout.addWidget(self.profile_button)
 
@@ -1611,10 +1603,9 @@ class MainWindow(QMainWindow):
             self.support_combo,
             self.load_axis_combo,
             self.load_end_combo,
-            self.advice_button,
-            self.profile_button,
         ):
             widget.setEnabled(active)
+        self._update_profile_button()
 
         if not active:
             self.load_guess_label.setText("")
@@ -1632,15 +1623,26 @@ class MainWindow(QMainWindow):
             text += f"<br><i>Gissat: {case.guessed_from} Rätta det här ovanför om det är fel.</i>"
         self.load_guess_label.setText(text)
 
-    def show_print_advice(self) -> None:
-        case = self.current_load()
-        if case is None or not case.active:
-            return
-        box = QMessageBox(self)
-        box.setWindowTitle("Utskriftsinställningar för styrka")
-        box.setTextFormat(Qt.PlainText)
-        box.setText(load_core.describe_advice(case))
-        box.exec()
+    def _profile_blocker(self) -> str:
+        """Varför profilknappen inte går att använda, eller tomt om den gör det."""
+        if self.mesh_info is None:
+            return "Ingen modell inläst - läs in en modell först."
+        if not self.load_check.isChecked():
+            return "Belastning är inte ikryssad - kryssa i den och ange vikten."
+        if float(self.load_weight.value()) <= 0:
+            return "Vikten är 0 kg - ange hur mycket delen ska bära."
+        return ""
+
+    def _update_profile_button(self) -> None:
+        blocker = self._profile_blocker()
+        self.profile_button.setEnabled(not blocker)
+        self.profile_button.setToolTip(
+            blocker
+            or "Visar inställningarna för en bärande del, med skäl, och skriver\n"
+            "dem som en profil i slicern (Orca-Flashforge, OrcaSlicer, Bambu\n"
+            "Studio). Profilen sätter bara det som rör hållfasthet - resten\n"
+            "ärvs från en profil du redan använder."
+        )
 
     # ------------------------------------------------------------------
     # Projekt
@@ -1887,16 +1889,53 @@ class MainWindow(QMainWindow):
         self._refresh_planes()
 
     def save_slicer_profile(self) -> None:
-        """Skriv inställningarna som en profil slicern kan importera.
+        """Visa inställningarna och skriv dem som en profil slicern kan läsa.
 
-        Profilen ärver från den processprofil användaren redan använder, och
-        namnet på den kan bara användaren själv ge - det står i slicerns
-        rullgardin. Utan den vet profilen ingenting om skrivaren, så den
-        frågas efter i stället för att gissas.
+        Allt som går fel fångas här: ett fel i dialogen, en mapp utan
+        skrivrättighet eller en trasig profilfil i slicern ska ge ett
+        begripligt besked i statusrutan, inte en tyst knapp. Hela förloppet
+        hamnar i loggen.
         """
+        try:
+            self._save_slicer_profile()
+        except profile_core.ProfileError as error:
+            self.status(str(error), error=True)
+        except PermissionError as error:
+            self._log_traceback()
+            self.status(
+                f"Fick inte skriva till {error.filename or 'mappen'} - saknas "
+                f"rättighet? Detaljer finns i {log_file()}",
+                error=True,
+            )
+        except Exception as error:  # noqa: BLE001 - allt ska bli ett begripligt fel
+            self._log_traceback()
+            self.status(
+                f"Slicerprofilen kunde inte sparas ({type(error).__name__}: {error}). "
+                f"Hela felet finns i {log_file()}",
+                error=True,
+            )
+
+    def _log_traceback(self) -> None:
+        """Skriv undantaget som hanteras just nu, med traceback, till loggfilen."""
+        import datetime
+        import traceback
+
+        log.exception("Slicerprofilen kunde inte sparas")
+        try:
+            path = log_file()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write(f"\n--- {datetime.datetime.now().isoformat(timespec='seconds')} "
+                             "Spara slicerprofil ---\n")
+                handle.write(traceback.format_exc())
+        except OSError:  # pragma: no cover - loggen får aldrig ge ett nytt fel
+            pass
+
+    def _save_slicer_profile(self) -> None:
+        blocker = self._profile_blocker()
         case = self.current_load()
-        if case is None or not case.active:
-            self.status("Kryssa i Belastning och ange vikten först.", error=True)
+        if blocker or case is None or not case.active:
+            self.status(blocker or "Kryssa i Belastning och ange vikten först.", error=True)
             return
 
         dialog = ProfileDialog(
@@ -1905,11 +1944,16 @@ class MainWindow(QMainWindow):
                 base_profile=self.settings.base_profile,
                 filament_profile=self.settings.filament_profile,
                 filament_temp_c=self.settings.filament_temp_c,
+                slicer=self.settings.slicer,
+                install_direct=self.settings.install_profile_direct,
+                export_files=self.settings.export_profile_files,
             ),
+            load=case,
         )
         if dialog.exec() != QDialog.Accepted:
             return
         choice = dialog.choice()
+        install = dialog.current_slicer() if choice.install_direct else None
         if not choice.base_profile:
             self.status(
                 "Ingen processprofil angiven - utan den vet profilen ingenting "
@@ -1921,34 +1965,104 @@ class MainWindow(QMainWindow):
         self.settings.base_profile = choice.base_profile
         self.settings.filament_profile = choice.filament_profile
         self.settings.filament_temp_c = choice.filament_temp_c
+        self.settings.slicer = choice.slicer
+        self.settings.install_profile_direct = choice.install_direct
+        self.settings.export_profile_files = choice.export_files
 
-        directory = QFileDialog.getExistingDirectory(
-            self,
-            "Var ska profilen sparas?",
-            self.settings.last_output_dir or str(Path.home()),
-        )
-        if not directory:
-            return
+        name = "Bärande delar"
+        if install is not None:
+            self._install_profiles(install, case, choice, name)
 
-        try:
+        if choice.export_files or install is None:
+            directory = QFileDialog.getExistingDirectory(
+                self,
+                "Var ska filerna att importera sparas?",
+                self.settings.last_output_dir or str(Path.home()),
+            )
+            if not directory:
+                return
+            variants = (
+                profile_core.extruder_variants(dialog.current_slicer(), choice.filament_profile)
+                if dialog.current_slicer() and choice.has_filament
+                else None
+            )
             bundle = profile_core.write_profiles(
                 case,
                 directory,
                 base_profile=choice.base_profile,
-                name="Bärande delar",
+                name=name,
                 filament_base=choice.filament_profile,
                 normal_temp_c=choice.filament_temp_c,
+                extruder_variants=variants,
             )
-        except profile_core.ProfileError as error:
-            self.status(str(error), error=True)
-            return
+            for path in bundle.files:
+                self.status(f"Skrev {path}")
+            for note in bundle.notes:
+                self.status(note)
+            self.status(
+                "Importera i slicern: Arkiv → Importera → Importera konfiguration."
+            )
 
-        for path in bundle.files:
-            self.status(f"Skrev {path}")
-        for note in bundle.notes:
-            self.status(note)
+    def _install_profiles(self, install, case, choice, name: str) -> None:
+        """Lägg profilerna i slicerns användarmapp, med lov att skriva över."""
+        profiles = [profile_core.process_profile(case, choice.base_profile, name)]
+        if choice.has_filament:
+            profiles.append(
+                profile_core.filament_profile(
+                    case,
+                    choice.filament_profile,
+                    choice.filament_temp_c,
+                    name,
+                    extruder_variants=profile_core.extruder_variants(
+                        install, choice.filament_profile
+                    ),
+                )
+            )
+        else:
+            self.status(
+                "Ingen filamentprofil vald - temperatur och fläkt ställs in "
+                "manuellt, eller välj en filamentprofil nästa gång."
+            )
+
+        known = {
+            "process": set(install.profiles("process")),
+            "filament": set(install.profiles("filament")),
+        }
+        for data in profiles:
+            kind = "process" if "print_settings_id" in data else "filament"
+            for problem in profile_core.validate_profile(data, known[kind] or None):
+                self.status(f"Varning ({kind}profilen): {problem}", error=True)
+
+        existing = [
+            path
+            for path in (
+                profile_core.user_profile_path(
+                    install, "process" if "print_settings_id" in d else "filament", d["name"]
+                )
+                for d in profiles
+            )
+            if path.exists()
+        ]
+        if existing:
+            answer = QMessageBox.question(
+                self,
+                "Skriva över profilen?",
+                "Det finns redan en profil med samma namn i slicern:\n\n"
+                + "\n".join(str(p) for p in existing)
+                + "\n\nSkriva över den?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if answer != QMessageBox.Yes:
+                self.status("Profilen lades inte in i slicern - den som fanns får stå kvar.")
+                return
+
+        for path in profile_core.install_profiles(install, profiles):
+            self.status(f"Lade in {path}")
         self.status(
-            "Importera i slicern: Arkiv → Importera → Importera konfiguration."
+            f"Stäng och starta om {install.display_name} för att profilen '{name}' "
+            "ska synas - slicern läser sin profilmapp bara vid start. Den ligger "
+            "under användarprofilerna i rullgardinerna för process och filament."
         )
 
     def start_analysis(self) -> None:

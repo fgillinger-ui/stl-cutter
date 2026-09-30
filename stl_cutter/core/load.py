@@ -53,6 +53,13 @@ __all__ = [
     "SUPPORT_LABELS",
     "LoadCase",
     "Setting",
+    "PROCESS",
+    "FILAMENT",
+    "TEMPERATURE_BOOST_C",
+    "FAN_MAX_PERCENT",
+    "FAN_MIN_PERCENT",
+    "layer_height",
+    "profile_values",
     "guess_load_case",
     "relative_moment",
     "moment_profile",
@@ -253,19 +260,61 @@ def transformed_load(load: LoadCase, transform) -> LoadCase:
     )
 
 
+#: Hur mycket temperaturen höjs för bättre lagerhäftning, i °C. Mitten av
+#: intervallet 5-10 som brukar anges, och det enda värde som används - både i
+#: råden och i slicerprofilen.
+TEMPERATURE_BOOST_C = 8
+
+#: Fläkten hålls i det här intervallet. Snabb kylning ger fina detaljer men
+#: svagare lagerfogar, och en bärande del behöver det omvända.
+FAN_MAX_PERCENT = 50
+FAN_MIN_PERCENT = 30
+
+#: Var en inställning hamnar i slicern. Tom sträng betyder att den inte går
+#: att lägga i en profil och måste ställas in för hand.
+PROCESS = "process"
+FILAMENT = "filament"
+
+
 @dataclass(frozen=True)
 class Setting:
-    """En inställning i slicern, med skälet till den."""
+    """En inställning i slicern, med skälet till den.
+
+    `profile` är slicerprofilens nycklar och värden för inställningen, som
+    par. Det är härifrån `core.profile` hämtar det den skriver - råden och
+    profilen är samma data, så de kan inte säga olika saker. `target` säger
+    vilken profil paren hör till; tomt betyder "ställs in manuellt".
+    """
 
     name: str
     value: str
     why: str
+    target: str = ""
+    profile: tuple[tuple[str, str], ...] = ()
+
+    @property
+    def manual(self) -> bool:
+        """Sant när inställningen inte kan läggas i en profil."""
+        return not self.profile
 
     def to_dict(self) -> dict:
-        return {"name": self.name, "value": self.value, "why": self.why}
+        return {
+            "name": self.name,
+            "value": self.value,
+            "why": self.why,
+            "target": self.target,
+            "profile": dict(self.profile),
+        }
 
 
-def print_advice(load: LoadCase, nozzle_mm: float = 0.4) -> list[Setting]:
+def layer_height(nozzle_mm: float) -> float:
+    """Ungefär 65 % av munstycket, i steg om 0,02 mm som slicern trivs med."""
+    return round(round(0.65 * nozzle_mm / 0.02) * 0.02, 2)
+
+
+def print_advice(
+    load: LoadCase, nozzle_mm: float = 0.4, normal_temp_c: float = 0.0
+) -> list[Setting]:
     """Inställningar för en del som ska bära last.
 
     Det här är **tumregler**, inte beräkningar. De följer av hur FDM går sönder
@@ -273,13 +322,28 @@ def print_advice(load: LoadCase, nozzle_mm: float = 0.4) -> list[Setting]:
     skalet längst från neutrallagret. Ingen av dem är ett löfte om en siffra -
     se modulens docstring om varför programmet inte räknar ut bärighet.
 
+    `normal_temp_c` är temperaturen filamentet brukar köras i. Utan den kan
+    temperaturen bara anges relativt, och hamnar inte i någon profil.
+
     Ordningen är avsiktlig: det som ger mest hållfasthet per minut först.
     """
     if not load.active:
         return []
 
     walls = 5 if load.mass_kg >= 3.0 else 4
-    layer = round(0.65 * nozzle_mm, 2)
+    layer = layer_height(nozzle_mm)
+
+    if normal_temp_c > 0:
+        hot = str(int(round(normal_temp_c + TEMPERATURE_BOOST_C)))
+        temp_value = f"{hot} °C ({normal_temp_c:.0f} + {TEMPERATURE_BOOST_C})"
+        temp_profile = (
+            ("nozzle_temperature", hot),
+            ("nozzle_temperature_initial_layer", hot),
+        )
+    else:
+        temp_value = f"+{TEMPERATURE_BOOST_C} °C över normalt"
+        temp_profile = ()
+
     return [
         Setting(
             "Väggar (perimeters)",
@@ -287,6 +351,8 @@ def print_advice(load: LoadCase, nozzle_mm: float = 0.4) -> list[Setting]:
             "Väggarna bär böjningen - de ligger längst från neutrallagret. Att "
             "gå från 2 till 5 väggar ger mycket mer än att höja fyllnaden lika "
             "mycket, och kostar mindre tid.",
+            PROCESS,
+            (("wall_loops", str(walls)),),
         ),
         Setting(
             "Fyllnad",
@@ -294,12 +360,16 @@ def print_advice(load: LoadCase, nozzle_mm: float = 0.4) -> list[Setting]:
             "Över ungefär 30 % ger varje procent lite styrka och mycket tid. "
             "Gyroid håller lika bra åt alla håll, vilket spelar roll när "
             "lasten inte är helt förutsägbar.",
+            PROCESS,
+            (("sparse_infill_density", "25%"), ("sparse_infill_pattern", "gyroid")),
         ),
         Setting(
             "Topp- och bottenlager",
             "5 st",
             "Samma skäl som väggarna: yttersta materialet är det som bär, och "
             "delen ligger platt så böjningen drar i topp och botten.",
+            PROCESS,
+            (("top_shell_layers", "5"), ("bottom_shell_layers", "5")),
         ),
         Setting(
             "Lagerhöjd",
@@ -307,18 +377,24 @@ def print_advice(load: LoadCase, nozzle_mm: float = 0.4) -> list[Setting]:
             f"Ungefär 65 % av munstyckets {nozzle_mm:g} mm. Tjockare lager är "
             "både snabbare och något starkare mellan lagren - det blir färre "
             "fogar att spricka i.",
+            PROCESS,
+            (("layer_height", f"{layer:.2f}"),),
         ),
         Setting(
             "Temperatur",
-            "+5 till +10 °C över normalt",
+            temp_value,
             "Lagerhäftningen är den svaga riktningen, och den blir bättre av "
             "varmare plast. Det är den enda inställningen här som är gratis i tid.",
+            FILAMENT,
+            temp_profile,
         ),
         Setting(
             "Fläkt",
-            "Sänk till 30-50 %",
+            f"Högst {FAN_MAX_PERCENT} %, lägst {FAN_MIN_PERCENT} %",
             "Snabb kylning ger fina detaljer men svagare lagerfogar. En hylla "
             "behöver det omvända.",
+            FILAMENT,
+            (("fan_max_speed", str(FAN_MAX_PERCENT)), ("fan_min_speed", str(FAN_MIN_PERCENT))),
         ),
         Setting(
             "Orientering",
@@ -329,15 +405,25 @@ def print_advice(load: LoadCase, nozzle_mm: float = 0.4) -> list[Setting]:
     ]
 
 
-def describe_advice(load: LoadCase, nozzle_mm: float = 0.4) -> str:
+def profile_values(settings: list[Setting], target: str) -> dict[str, str]:
+    """Nycklarna och värdena som hör till en profil, i rådens ordning."""
+    values: dict[str, str] = {}
+    for setting in settings:
+        if setting.target == target:
+            values.update(setting.profile)
+    return values
+
+
+def describe_advice(load: LoadCase, nozzle_mm: float = 0.4, normal_temp_c: float = 0.0) -> str:
     """Inställningarna i klartext, med tidsavvägningen sist."""
-    settings = print_advice(load, nozzle_mm=nozzle_mm)
+    settings = print_advice(load, nozzle_mm=nozzle_mm, normal_temp_c=normal_temp_c)
     if not settings:
         return "Ingen last angiven - inga särskilda utskriftsinställningar behövs."
 
     lines = ["Utskriftsinställningar för en belastad del (tumregler, inte beräkningar):"]
     for setting in settings:
-        lines.append(f"  {setting.name}: {setting.value}")
+        manual = "   (ställs in manuellt)" if setting.manual else ""
+        lines.append(f"  {setting.name}: {setting.value}{manual}")
         lines.append(f"      {setting.why}")
     lines.append(
         "  Vill du korta tiden: sänk fyllnaden och höj lagerhöjden. Spara inte "

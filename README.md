@@ -102,8 +102,8 @@ flik får plats i sin helhet, så ingenting hamnar utanför fönsterkanten.
 3b. **Belastning** — ska delen bära något? Kryssa i rutan och ange vikten.
    Programmet gissar upphängningen ur formen, visar gissningen med sitt skäl
    så att du kan rätta den, och lägger sedan snitten där böjmomentet är minst.
-   Knappen *Utskriftsinställningar för styrka…* ger inställningarna för
-   slicern. Se [Delar som ska bära något](#delar-som-ska-bära-något).
+   Knappen *Slicerprofil för styrka…* visar inställningarna för slicern och
+   lägger in dem som en profil. Se [Delar som ska bära något](#delar-som-ska-bära-något).
 4. **Förslag** — klicka *Analysera*. Du får en tabell med ett snitt per rad:
    var det ligger, vilken fogtyp programmet föreslår och varför. Markera en rad
    för att läsa hela motiveringen och se de näst bästa alternativen.
@@ -272,20 +272,21 @@ helt, så den gissningen får aldrig gå igenom osedd.
 
 Med en last angiven skrivs också utskriftsinställningar för hållfasthet ut —
 väggar, fyllnad, lagerhöjd, temperatur och fläkt, var och en med skälet till
-sig. I gränssnittet ligger de bakom knappen **Utskriftsinställningar för
-styrka…**.
+sig. I gränssnittet ligger de bakom knappen **Slicerprofil för styrka…**.
 
 Inställningarna följer inte med i STL-filen — en STL innehåller bara trianglar.
-Men de går att få som en profil slicern kan importera (OrcaSlicer, FlashPrint,
-Bambu Studio, Qidi Studio):
+Men de går att få som en profil i slicern (Orca-Flashforge, OrcaSlicer, Bambu
+Studio, Qidi Studio):
 
 ```bash
 stl-cutter profile --load-kg 5 --base-profile "0.20mm Standard @FF C5" --out ./ut
 ```
 
-eller knappen **Spara slicerprofil…** i rutan *3b. Belastning*. Namnet på
-basprofilen är det som står i slicerns rullgardin — profilen sätter bara det
-som rör hållfasthet och ärver resten därifrån. Se
+eller knappen **Slicerprofil för styrka…** i rutan *3b. Belastning*. Dialogen
+visar först vad profilen sätter, med skäl. Basprofilen väljs ur en lista som
+programmet läser ur den installerade slicern, och profilen kan läggas in direkt
+i slicerns användarmapp — starta om slicern så syns den. Profilen sätter bara
+det som rör hållfasthet och ärver resten från basprofilen. Se
 [docs/LOAD.md](docs/LOAD.md#profil-till-slicern).
 
 > **Vad programmet inte gör:** det räknar *inte* ut hur mycket hyllan bär.

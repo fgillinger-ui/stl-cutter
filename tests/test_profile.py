@@ -11,6 +11,9 @@ import json
 
 import pytest
 
+from conftest import make_fake_orca
+
+from stl_cutter.core import load as load_core
 from stl_cutter.core import profile as profile_core
 from stl_cutter.core.load import LoadCase
 
@@ -169,7 +172,7 @@ def test_both_files_are_written_when_the_filament_is_known(tmp_path):
         shelf_load(),
         tmp_path,
         base_profile="0.20mm Standard @FF C5",
-        filament_base="Flashforge HS PETG @FF C5",
+        filament_base="Flashforge HS PETG @FF C5P",
         normal_temp_c=235.0,
     )
 
@@ -241,3 +244,193 @@ def test_the_note_says_which_profile_the_import_depends_on(tmp_path):
 
     assert any("0.20mm Standard @FF C5" in note for note in bundle.notes)
     assert any("inställningar.txt" in note for note in bundle.notes)
+
+
+# --------------------------------------------------------------------------
+# Samma krav som slicerns import
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("kg", [1.0, 5.0])
+def test_written_profiles_pass_the_import_checks(kg):
+    known_process = {"0.20mm Standard @FF C5"}
+    known_filament = {"Flashforge HS PETG @FF C5P"}
+    process = profile_core.process_profile(shelf_load(kg), "0.20mm Standard @FF C5")
+    filament = profile_core.filament_profile(shelf_load(kg), "Flashforge HS PETG @FF C5P", 235.0)
+
+    assert profile_core.validate_profile(process, known_process) == []
+    assert profile_core.validate_profile(filament, known_filament) == []
+
+
+@pytest.mark.parametrize(
+    "change, reason",
+    [
+        ({"version": None}, "version"),
+        ({"version": "ett"}, "version"),
+        ({"print_settings_id": None}, "Preset type is unknown"),
+        ({"filament_settings_id": ["x"]}, "Flera id-fält"),
+        ({"wall_loops": 5}, "sträng"),
+        ({"type": "process"}, "leverantörsprofiler"),
+        ({"inherits": "0.20mm Standard @FF C5 "}, "finns inte"),
+        ({"name": "a/b"}, "sökvägstecken"),
+    ],
+)
+def test_the_check_catches_what_the_import_refuses(change, reason):
+    """Varje fel här har importen avvisat tyst - kontrollen ska säga det högt."""
+    data = profile_core.process_profile(shelf_load(), "0.20mm Standard @FF C5")
+    for key, value in change.items():
+        if value is None:
+            data.pop(key)
+        else:
+            data[key] = value
+
+    problems = profile_core.validate_profile(data, {"0.20mm Standard @FF C5"})
+
+    assert any(reason in p for p in problems), problems
+
+
+# --------------------------------------------------------------------------
+# Råden och profilen är samma data
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("kg", [1.0, 5.0])
+def test_the_preview_and_the_profile_say_the_same_thing(kg):
+    """Det som visas i förhandsvisningen är exakt det som skrivs."""
+    case = shelf_load(kg)
+    advice = load_core.print_advice(case, normal_temp_c=235.0)
+    process = profile_core.process_profile(case, "bas")
+    filament = profile_core.filament_profile(case, "bas", 235.0)
+
+    for setting in advice:
+        for key, value in setting.profile:
+            if setting.target == load_core.PROCESS:
+                assert process[key] == value, key
+            else:
+                assert filament[key] == [value], key
+    # Och inget i profilen som inte står i råden.
+    shown = {k for s in advice for k, _ in s.profile}
+    written = (set(process) | set(filament)) - set(profile_core.HEADER_KEYS)
+    assert written == shown
+
+    walls = next(s for s in advice if s.name.startswith("Väggar"))
+    assert walls.value == f"{process['wall_loops']} st"
+    layer = next(s for s in advice if s.name == "Lagerhöjd")
+    assert layer.value == f"{process['layer_height']} mm"
+    temp = next(s for s in advice if s.name == "Temperatur")
+    assert temp.value.startswith(filament["nozzle_temperature"][0])
+
+
+def test_the_orientation_is_marked_manual():
+    advice = load_core.print_advice(shelf_load())
+
+    orientation = next(s for s in advice if s.name == "Orientering")
+    assert orientation.manual
+    assert "ställs in manuellt" in load_core.describe_advice(shelf_load())
+
+
+def test_a_six_tenths_nozzle_gets_the_same_layer_in_both():
+    """Förut gav råden 0,39 mm och profilen 0,40 mm för samma munstycke."""
+    advice = load_core.print_advice(shelf_load(), nozzle_mm=0.6)
+    process = profile_core.process_profile(shelf_load(), "bas", nozzle_mm=0.6)
+
+    layer = next(s for s in advice if s.name == "Lagerhöjd")
+    assert layer.value == f"{process['layer_height']} mm"
+
+
+def test_filament_values_follow_the_extruder_variants():
+    out = profile_core.filament_profile(
+        shelf_load(), "bas", 235.0, extruder_variants=["Direct Drive Standard", "Direct Drive High Flow"]
+    )
+
+    assert out["filament_extruder_variant"] == ["Direct Drive Standard", "Direct Drive High Flow"]
+    assert out["nozzle_temperature"] == ["243", "243"]
+
+
+# --------------------------------------------------------------------------
+# Installerade slicers
+# --------------------------------------------------------------------------
+
+
+def test_slicers_are_found_in_config_and_flatpak(tmp_path):
+    home = tmp_path / "home"
+    make_fake_orca(home / ".config")
+    make_fake_orca(home / ".var" / "app" / "com.orcaslicer.OrcaSlicer" / "config", "OrcaSlicer")
+    # En mapp utan system/ är ingen slicer som körts.
+    (home / ".config" / "BambuStudio").mkdir(parents=True)
+
+    found = profile_core.find_slicers(home=home)
+
+    assert [s.display_name for s in found] == ["Orca-Flashforge", "OrcaSlicer (Flatpak)"]
+
+
+def test_no_slicer_means_an_empty_list(tmp_path):
+    assert profile_core.find_slicers(home=tmp_path) == []
+
+
+def test_profile_names_are_read_and_filtered_on_the_printer(tmp_path):
+    home = tmp_path / "home"
+    make_fake_orca(home / ".config", printer="Flashforge Creator 5 Pro 0.4 nozzle")
+    install = profile_core.find_slicers(home=home)[0]
+
+    printer = install.selected_printer
+    processes = profile_core.system_profiles(install, "process", printer)
+    filaments = profile_core.system_profiles(install, "filament", printer)
+
+    assert printer == "Flashforge Creator 5 Pro 0.4 nozzle"
+    # Bara de som är skrivna för C5 Pro, och aldrig en abstrakt basprofil.
+    assert processes == ["0.20mm Standard @FF C5", "0.24mm Standard @FF C5"]
+    assert filaments == ["Flashforge HS PETG @FF C5P", "Flashforge PLA Basic @FF C5P"]
+    assert "fdm_process_common" not in profile_core.system_profiles(install, "process")
+
+
+def test_a_user_printer_is_traced_to_its_system_parent(tmp_path):
+    """Har man sparat en egen skrivarprofil står systemets namn i arvet."""
+    home = tmp_path / "home"
+    data = make_fake_orca(home / ".config", printer="Min C5")
+    user_machine = data / "user" / "default" / "machine" / "Min C5.json"
+    user_machine.parent.mkdir(parents=True)
+    user_machine.write_text(
+        json.dumps({"name": "Min C5", "inherits": "Flashforge Creator 5 Pro 0.4 nozzle"}),
+        encoding="utf-8",
+    )
+
+    install = profile_core.find_slicers(home=home)[0]
+
+    assert install.selected_printer == "Flashforge Creator 5 Pro 0.4 nozzle"
+
+
+def test_the_user_folder_follows_the_login(tmp_path):
+    """Inloggad i slicern läser den user/<id>, inte user/default."""
+    home = tmp_path / "home"
+    make_fake_orca(home / ".config", preset_folder="12345")
+    install = profile_core.find_slicers(home=home)[0]
+
+    assert install.user_dir == install.data_dir / "user" / "12345"
+
+
+def test_profiles_are_installed_in_the_user_folder_named_as_the_profile(tmp_path):
+    home = tmp_path / "home"
+    make_fake_orca(home / ".config")
+    install = profile_core.find_slicers(home=home)[0]
+    process = profile_core.process_profile(shelf_load(), "0.20mm Standard @FF C5", "Hylla")
+    filament = profile_core.filament_profile(shelf_load(), "Flashforge HS PETG @FF C5P", 235.0, "Hylla")
+
+    written = profile_core.install_profiles(install, [process, filament])
+
+    user = install.data_dir / "user" / "default"
+    assert written == [user / "process" / "Hylla.json", user / "filament" / "Hylla.json"]
+    # Slicern tar namnet från filnamnet - de måste stämma.
+    for path in written:
+        assert json.loads(path.read_text(encoding="utf-8"))["name"] == path.stem
+    assert not any("user" in str(p) for p in (install.data_dir / "system").rglob("*Hylla*"))
+
+
+def test_the_extruder_variants_come_from_the_base(tmp_path):
+    home = tmp_path / "home"
+    make_fake_orca(home / ".config")
+    install = profile_core.find_slicers(home=home)[0]
+
+    assert profile_core.extruder_variants(install, "Flashforge HS PETG @FF C5P") == [
+        "Direct Drive Standard"
+    ]
